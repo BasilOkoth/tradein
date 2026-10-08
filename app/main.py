@@ -24,12 +24,6 @@ def _normalise_origin(value: str) -> str:
 
 
 def _cors_origins():
-    """
-    Allow the configured frontend plus the canonical DigitMatchStar domains.
-
-    This prevents a www/non-www deployment mismatch from surfacing in the
-    browser as the opaque JavaScript error: TypeError: Failed to fetch.
-    """
     values = {
         _normalise_origin(settings.frontend_url),
         "https://digitmatchstar.com",
@@ -48,7 +42,6 @@ def _cors_origins():
             if parsed.scheme in {"http", "https"} and parsed.hostname:
                 host = parsed.hostname
                 port = f":{parsed.port}" if parsed.port else ""
-
                 if host.startswith("www."):
                     values.add(f"{parsed.scheme}://{host[4:]}{port}")
                 else:
@@ -89,6 +82,29 @@ async def startup():
     await engine.start()
 
 
+@app.get("/")
+def root():
+    return {
+        "ok": True,
+        "service": "digitmatchstar-top4-api",
+        "backend": "DigitMatchStar Production OAuth Backend",
+        "top4": True,
+        "health": "/health",
+        "docs": "/docs",
+    }
+
+
+@app.get("/api/state")
+def api_state_compat():
+    return {
+        "ok": True,
+        "service": "digitmatchstar-top4-api",
+        "backend": "DigitMatchStar Production OAuth Backend",
+        "top4": True,
+        "health": "/health",
+    }
+
+
 @app.get("/health")
 def health():
     return {
@@ -117,13 +133,6 @@ def owns_session(db, user_id, sid):
 
 
 def digit_score_for_session(session_id: int):
-    """
-    Compatibility wrapper around the live top-digit scoring engine.
-
-    The engine exposes _score_all_digits internally. Keeping this adapter here
-    lets the frontend inspect the current ranking without duplicating scoring
-    logic in the API.
-    """
     scorer = getattr(engine, "_score_all_digits", None)
 
     if not callable(scorer):
@@ -208,12 +217,6 @@ def removed_tae_export(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
-    """
-    Kept only so an old browser button does not crash the API.
-
-    TAE no longer controls execution. The active engine scores digits 0-9 and
-    uses the current rank #1 as the next target without a multi-loss lock.
-    """
     db = SessionLocal()
     try:
         owns_session(db, user_id, sid)
@@ -340,8 +343,6 @@ def create_session(
         s.phase = "CONFIGURED"
         s.updated_at = datetime.utcnow()
 
-        # Candidate may remain from a previous idle session, but Trade 1 will
-        # be rescored by the server engine from canonical history.
         db.commit()
         db.refresh(s)
 
@@ -397,8 +398,6 @@ def candidate(
                 "reconcile_required": True,
             }
 
-        # This sets the initial/fallback digit only. Once the server has enough
-        # canonical history, the engine scores 0-9 and chooses rank #1.
         s.candidate_digit = int(body.digit)
         s.updated_at = datetime.utcnow()
         db.commit()
@@ -440,9 +439,6 @@ def start(
                 "open_contract_id": s.open_contract_id,
             }
 
-        # A fallback digit is accepted so START never fails merely because
-        # scoring history is warming. The engine replaces it with rank #1 as
-        # soon as scoring is ready.
         if s.candidate_digit is None:
             s.candidate_digit = 5
 
