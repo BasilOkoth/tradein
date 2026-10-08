@@ -1,30 +1,35 @@
 services:
   - type: web
-    name: digitmatchstar-top4-basket
-    runtime: python
-    plan: starter
-    region: frankfurt
-    autoDeploy: true
-
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
-    healthCheckPath: /api/state
-
+    name: digitmatchstar-top4-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: DERIV_APP_ID
+      - key: DATABASE_URL
         sync: false
-      - key: DERIV_TOKEN
+      - key: DERIV_CLIENT_ID
         sync: false
-      - key: DEFAULT_SYMBOL
-        value: R_10
-      - key: DEFAULT_BASKET_STAKE
-        value: "10.00"
+      - key: DERIV_REDIRECT_URI
+        sync: false
+      - key: DERIV_LEGACY_APP_ID
+        sync: false
+      - key: DERIV_SCOPE
+        value: "trade"
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: PLATFORM_JWT_SECRET
+        sync: false
+      - key: PLATFORM_JWT_ALGORITHM
+        value: "HS256"
+      - key: TRUST_PLATFORM_USER_HEADER
+        value: "false"
+      - key: FRONTEND_URL
+        sync: false
+      - key: ALLOW_REAL_MODE
+        value: "true"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
-      - key: ALLOW_REAL_EXECUTION
-        value: "false"
+      - key: TELEGRAM_ADMIN_CHAT_ID
+        sync: false

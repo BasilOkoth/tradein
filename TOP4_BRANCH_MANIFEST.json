@@ -1,0 +1,18 @@
+{
+  "base_repo": "BasilOkoth/derivmatchstars",
+  "base_commit": "78d6837b32e39b3492efea51ebb7d1f3ee39ac10",
+  "suggested_branch": "top4-ranked-manual-basket",
+  "overlay_files": [
+    "app/top4_basket.py",
+    "app/top4_main.py",
+    "top4-basket-ui.js",
+    "research-suite-loader.js",
+    "render.yaml"
+  ],
+  "uses_existing_codebase": true,
+  "demo_manual_approval": true,
+  "real_manual_approval": true,
+  "real_buy_transmitted": false,
+  "telegram": true,
+  "export": true
+}

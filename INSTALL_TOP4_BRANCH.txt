@@ -1,0 +1,26 @@
+DigitMatchStar Top-4 Manual Basket — branch overlay
+
+BASE
+- Repository: BasilOkoth/derivmatchstars
+- Base commit: 78d6837b32e39b3492efea51ebb7d1f3ee39ac10
+- Suggested branch: top4-ranked-manual-basket
+
+CREATE THE BRANCH FROM CURRENT MAIN, THEN UPLOAD:
+NEW:
+  app/top4_basket.py
+  app/top4_main.py
+  top4-basket-ui.js
+
+REPLACE:
+  research-suite-loader.js
+  render.yaml
+
+LEAVE EVERY OTHER FILE FROM MAIN UNCHANGED.
+
+Render starts:
+  uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+
+Top-4 flow:
+  PREPARE -> APPROVE
+  DEMO approval: four DEMO buys
+  REAL approval: approval/preview recorded, no real-money BUY transmitted
