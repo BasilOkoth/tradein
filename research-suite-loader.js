@@ -40,7 +40,7 @@
       el.async = false;
       el.dataset.dmsResearchAddon = '1';
       el.onload = resolve;
-      el.onerror = () => reject(new Error(`Failed to load ${src}`));
+      el.onerror = () => { console.warn(`[DMS Add-on] optional script unavailable: ${src}`); resolve(); };
       document.head.appendChild(el);
     });
   }

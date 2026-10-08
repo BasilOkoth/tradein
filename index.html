@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DigitMatchStar | Secure Deriv Connection</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+body{font-family:Inter,system-ui,sans-serif;background:
+radial-gradient(circle at 20% 10%,rgba(34,197,94,.16),transparent 30%),
+linear-gradient(180deg,#04100b,#07150f 55%,#040a07);color:#f8fafc}
+.glass{background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.16);backdrop-filter:blur(18px)}
+</style>
+</head>
+<body class="min-h-screen">
+<nav class="max-w-6xl mx-auto px-5 py-6 flex items-center justify-between">
+  <div class="text-2xl font-black text-emerald-400">DigitMatchStar</div>
+  <div id="sessionBadge" class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-300">Secure OAuth</div>
+</nav>
+
+<main class="max-w-6xl mx-auto px-5 pt-16 pb-24">
+  <div class="grid lg:grid-cols-2 gap-10 items-center">
+    <section>
+      <div class="inline-flex px-3 py-1 rounded-full bg-emerald-950 border border-emerald-700 text-emerald-300 text-xs font-bold mb-5">
+        SERVER-SECURED DERIV CONNECTION
+      </div>
+      <h1 class="text-5xl md:text-6xl font-black leading-tight">Trade through your own Deriv account.</h1>
+      <p class="mt-6 text-lg text-slate-400 max-w-xl">
+        Connect with Deriv using OAuth. Your Deriv access token is kept encrypted on the DigitMatchStar server,
+        rather than stored in the browser.
+      </p>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <button onclick="connectDeriv('DEMO')" class="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-extrabold">
+          Connect DEMO
+        </button>
+        <button onclick="connectDeriv('REAL')" class="px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 font-extrabold">
+          Connect REAL
+        </button>
+      </div>
+      <div id="authStatus" class="mt-5 text-sm text-slate-400">Choose an account mode to continue.</div>
+    </section>
+
+    <section class="glass rounded-3xl p-6 md:p-8 shadow-2xl">
+      <div class="text-sm font-black text-cyan-300 mb-5">HOW THE SECURE FLOW WORKS</div>
+      <div class="space-y-4 text-sm">
+        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800"><b>1.</b> You approve DigitMatchStar on Deriv.</div>
+        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800"><b>2.</b> Deriv returns authorization to the backend.</div>
+        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800"><b>3.</b> Your Deriv token is encrypted in Postgres.</div>
+        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800"><b>4.</b> Your browser receives only a DigitMatchStar session token.</div>
+        <div class="p-4 rounded-xl bg-slate-950/60 border border-slate-800"><b>5.</b> Your server-side trading session is isolated to your account.</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const DMS_API = "https://digitmatchstar-api.onrender.com";
+
+/*
+ * TEMPORARY SAFE ROUTE
+ * Current bot.html is the newer full build.
+ * bot-obfuscated.html is currently an older/out-of-sync build.
+ * Keep login pointed at bot.html until the obfuscated file is regenerated
+ * from the exact current bot.html.
+ */
+const BOT_ENTRY_PATH = "/bot.html";
+
+function clearLegacyDerivBrowserSecrets(){
+  [
+    "active_token","derivToken","derivTokenDemo","derivTokenReal",
+    "deriv_token_type","deriv_token_expires_at"
+  ].forEach(k => localStorage.removeItem(k));
+}
+
+function chooseAccount(accounts, requestedMode){
+  const wanted = String(requestedMode || "DEMO").toLowerCase();
+  return accounts.find(a => String(a.account_type || "").toLowerCase() === wanted) || accounts[0] || null;
+}
+
+function safeLocalSet(key, value){
+  try{
+    localStorage.setItem(key, value);
+    return true;
+  }catch(err){
+    console.warn(`[DigitMatchStar] localStorage full; could not persist ${key}`, err);
+    return false;
+  }
+}
+
+function savePlatformSession(payload){
+  clearLegacyDerivBrowserSecrets();
+
+  // Authentication/session state belongs in sessionStorage so large research
+  // data in localStorage cannot block login.
+  sessionStorage.setItem("dms_platform_jwt", payload.token);
+  sessionStorage.setItem("bot_authenticated", "true");
+  sessionStorage.setItem("auth_method", "dms_server_oauth_v211");
+  sessionStorage.setItem("deriv_accounts", JSON.stringify(payload.accounts || []));
+
+  const selected = chooseAccount(payload.accounts || [], payload.requested_mode);
+  if (!selected) throw new Error("No Deriv Options account was returned.");
+
+  const mode =
+    String(selected.account_type || payload.requested_mode || "DEMO").toUpperCase() === "REAL"
+      ? "REAL"
+      : "DEMO";
+
+  // Keep all values required by the bot in sessionStorage.
+  sessionStorage.setItem("selectedAccountMode", mode);
+  sessionStorage.setItem("active_account", selected.account_id);
+  sessionStorage.setItem("derivAccount", selected.account_id);
+
+  if (mode === "REAL") {
+    sessionStorage.setItem("derivRealAccount", selected.account_id);
+  } else {
+    sessionStorage.setItem("derivDemoAccount", selected.account_id);
+  }
+
+  sessionStorage.setItem("dms_server_execution_url", DMS_API);
+  sessionStorage.setItem("dms_server_execution_enabled", "1");
+
+  // Non-critical persistence only. Failure here must never block authentication.
+  safeLocalSet("selectedAccountMode", mode);
+  safeLocalSet("active_account", selected.account_id);
+  safeLocalSet("derivAccount", selected.account_id);
+  safeLocalSet("dms_server_execution_url", DMS_API);
+  safeLocalSet("dms_server_execution_enabled", "1");
+}
+
+async function connectDeriv(mode){
+  const status = document.getElementById("authStatus");
+
+  try{
+    status.textContent = "Preparing secure Deriv login…";
+
+    const res = await fetch(
+      `${DMS_API}/auth/deriv/start?mode=${encodeURIComponent(mode)}`
+    );
+
+    const data = await res.json();
+
+    if(!res.ok || !data.authorization_url){
+      throw new Error(data.detail || "Could not start Deriv OAuth");
+    }
+
+    window.location.href = data.authorization_url;
+
+  }catch(err){
+    status.textContent = "Connection failed: " + err.message;
+  }
+}
+
+async function exchangeTicket(){
+  const params = new URLSearchParams(location.search);
+  const ticket = params.get("dms_ticket");
+  const authError = params.get("auth_error");
+  const status = document.getElementById("authStatus");
+
+  if(authError){
+    status.textContent = "Deriv authorization failed: " + authError;
+    history.replaceState({}, document.title, "/");
+    return;
+  }
+
+  if(!ticket) return;
+
+  try{
+    status.textContent = "Completing secure login…";
+
+    const res = await fetch(`${DMS_API}/auth/platform/exchange`,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ticket})
+    });
+
+    const data = await res.json();
+
+    if(!res.ok || !data.token){
+      throw new Error(data.detail || "Login ticket exchange failed");
+    }
+
+    savePlatformSession(data);
+
+    // Remove one-time OAuth ticket from the visible URL before entering the bot.
+    history.replaceState({}, document.title, "/");
+
+    // IMPORTANT:
+    // Route to the current full bot build. Switch this back to
+    // /bot-obfuscated.html only after that file has been regenerated from
+    // the current bot.html and tested.
+    window.location.replace(BOT_ENTRY_PATH);
+
+  }catch(err){
+    console.error("[DigitMatchStar OAuth]", err);
+    status.textContent = "Login failed: " + err.message;
+    history.replaceState({}, document.title, "/");
+  }
+}
+
+document.addEventListener("DOMContentLoaded", exchangeTicket);
+</script>
+</body>
+</html>

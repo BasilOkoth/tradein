@@ -1,42 +1,115 @@
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional
-from time import time
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import declarative_base
+from datetime import datetime
 
-@dataclass
-class RankedDigit:
-    rank: int
-    digit: int
-    score: float
+Base = declarative_base()
 
-@dataclass
-class Leg:
-    rank: int
-    digit: int
-    stake: float
-    proposal_id: Optional[str] = None
-    contract_id: Optional[str] = None
-    payout: float = 0.0
-    profit: float = 0.0
-    result: str = "PENDING"
+class DerivCredential(Base):
+    __tablename__ = "deriv_credentials"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(200), unique=True, nullable=False, index=True)
+    encrypted_access_token = Column(Text, nullable=False)
+    token_type = Column(String(32), nullable=False, default="Bearer")
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-@dataclass
-class Basket:
-    basket_no: int
-    symbol: str
-    account_mode: str
-    source_epoch: int
-    source_digit: int
-    total_stake: float
-    stake_per_leg: float
-    ranked: List[RankedDigit]
-    legs: List[Leg]
-    status: str = "ARMED"
-    outcome_epoch: Optional[int] = None
-    outcome_digit: Optional[int] = None
-    gross_return: float = 0.0
-    net_profit: float = 0.0
-    created_at: float = field(default_factory=time)
-    settled_at: Optional[float] = None
+class OAuthPending(Base):
+    __tablename__ = "oauth_pending"
+    id = Column(Integer, primary_key=True)
+    state = Column(String(200), unique=True, nullable=False, index=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    code_verifier = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    def as_dict(self):
-        return asdict(self)
+class DerivAccount(Base):
+    __tablename__ = "deriv_accounts"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    account_type = Column(String(20), nullable=False)
+    currency = Column(String(20), nullable=True)
+    status = Column(String(40), nullable=True)
+    balance = Column(Float, nullable=True)
+    raw_json = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("user_id", "account_id", name="uq_user_deriv_account"),)
+
+class TradingSession(Base):
+    __tablename__ = "trading_sessions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    account_mode = Column(String(10), nullable=False)
+    symbol = Column(String(40), nullable=False, default="R_10")
+    running = Column(Boolean, nullable=False, default=False)
+    paused = Column(Boolean, nullable=False, default=False)
+    phase = Column(String(50), nullable=False, default="IDLE")
+    base_stake = Column(Float, nullable=False, default=1.0)
+    multiplier = Column(Float, nullable=False, default=1.15)
+    max_trades = Column(Integer, nullable=False, default=10)
+    current_trade = Column(Integer, nullable=False, default=0)
+    current_stake = Column(Float, nullable=False, default=1.0)
+    candidate_digit = Column(Integer, nullable=True)
+    open_contract_id = Column(String(120), nullable=True)
+    pnl = Column(Float, nullable=False, default=0.0)
+    pending_real_confirmation = Column(Boolean, nullable=False, default=False)
+    pending_trade_json = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("user_id", "account_id", name="uq_user_account_session"),)
+
+class TradeLog(Base):
+    __tablename__ = "trade_logs"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    trading_session_id = Column(Integer, nullable=False)
+    trade_no = Column(Integer, nullable=False)
+    account_mode = Column(String(10), nullable=False)
+    account_id = Column(String(120), nullable=False)
+    symbol = Column(String(40), nullable=False)
+    digit = Column(Integer, nullable=False)
+    stake = Column(Float, nullable=False)
+    contract_id = Column(String(120), nullable=True)
+    status = Column(String(30), nullable=False, default="PROPOSED")
+    buy_price = Column(Float, nullable=True)
+    payout = Column(Float, nullable=True)
+    profit = Column(Float, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    settled_at = Column(DateTime, nullable=True)
+    raw_json = Column(Text, nullable=True)
+
+class TAEState(Base):
+    __tablename__ = "tae_states"
+    id = Column(Integer, primary_key=True)
+    trading_session_id = Column(Integer, nullable=False, unique=True, index=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    symbol = Column(String(40), nullable=False)
+    target_digit = Column(Integer, nullable=True)
+    model_json = Column(Text, nullable=False, default="{}")
+    history_json = Column(Text, nullable=False, default="[]")
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class TAEObservation(Base):
+    __tablename__ = "tae_observations"
+    id = Column(Integer, primary_key=True)
+    trading_session_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(String(200), nullable=False, index=True)
+    account_id = Column(String(120), nullable=False)
+    symbol = Column(String(40), nullable=False)
+    sample_index = Column(Integer, nullable=False)
+    target_digit = Column(Integer, nullable=False)
+    prediction_t0_probability = Column(Float, nullable=False)
+    selected = Column(Boolean, nullable=False, default=False)
+    arm_threshold = Column(Float, nullable=False)
+    label_return_by_t10 = Column(Integer, nullable=False)
+    stop10 = Column(Integer, nullable=False)
+    forward_gap = Column(Integer, nullable=True)
+    horizon = Column(Integer, nullable=False, default=10)
+    features_json = Column(Text, nullable=False)
+    model_trained_samples_at_t0 = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("trading_session_id","sample_index",name="uq_tae_session_sample"),
+    )

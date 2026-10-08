@@ -1,238 +1,1793 @@
 import asyncio
+import json
+import uuid
+from datetime import datetime
 from collections import deque
-from dataclasses import asdict
-from time import time
-from typing import Optional
 
-from .config import settings
-from .deriv import DerivClient
-from .models import Basket, RankedDigit, Leg
-from .scoring import Top4DigitScorer
-from .telegram import send_telegram
+from .db import SessionLocal
+from .models import TradingSession, DerivCredential, DerivAccount, TradeLog
+from .security import decrypt_token
+from .deriv_rest import get_ws_url
+from .deriv_ws import DerivWS
+from .digit_score import DigitScoreEngine
 
 
-class Top4BasketEngine:
+class MultiUserEngine:
+    """
+    DigitMatchStar low-latency engine.
+
+    Strategy invariant:
+      1. Buy Trade N.
+      2. The first eligible live tick after the trade is armed drives the
+         immediate strategy decision:
+            target digit == tick last digit -> WIN -> stop immediately
+            target digit != tick last digit -> LOSS -> advance immediately
+      3. The next recovery proposal is pre-armed while Trade N is open.
+      4. On a fast loss, BUY Trade N+1 immediately with that pre-armed proposal.
+      5. Deriv proposal_open_contract settlement runs in the background only
+         for authoritative P/L/accounting/reconciliation.
+      6. If the fast tick result disagrees with Deriv's eventual settlement,
+         stop with RECONCILE_MISMATCH rather than silently continuing.
+    """
+
     def __init__(self):
-        self.client = DerivClient()
-        self.scorer = Top4DigitScorer()
-        self.history = deque(maxlen=100)
-        self.symbol = settings.default_symbol
-        self.mode = "DEMO"
-        self.basket_stake = settings.default_basket_stake
-        self.currency = "USD"
+        self.task = None
+        self.clients = {}  # (user_id, account_id) -> DerivWS
 
-        self.latest_tick = None
-        self.latest_score = {"ready": False, "ranking": [], "top4": []}
-        self.running = False
-        self.subscription_id = None
-        self.basket_no = 0
-        self.open_basket: Optional[Basket] = None
-        self.baskets = []
-        self.total_profit = 0.0
-        self.total_staked = 0.0
-        self._lock = asyncio.Lock()
+        self.session_tasks = {}
+        self.session_locks = {}
 
-    @staticmethod
-    def _last_digit(tick):
-        quote = tick.get("quote")
-        pip = tick.get("pip_size")
-        if quote is None:
-            return None
+        # Live tick stream state.
+        self.tick_subscriptions = {}  # sid -> {subscription_id, symbol}
+        self.latest_tick_epoch = {}
+        self.latest_ticks = {}
+
+        # Only the newest strategy-active paid contract belongs here.
+        # Older contracts can still settle in the background.
+        self.fast_contracts = {}  # sid -> contract metadata
+
+        # Settlement bookkeeping keyed per individual contract.
+        self.contract_subscriptions = {}  # (sid, contract_id) -> sub_id
+        self.contract_poll_tasks = {}  # fallback only
+
+        # One pre-armed recovery proposal per session.
+        self.prefetched_recovery = {}  # sid -> payload
+        self.prefetch_tasks = {}  # sid -> asyncio.Task
+
+        # Latest live V1 rank #1 for the NEXT trade.
+        # This may change while a purchased contract is open; the purchased
+        # contract itself remains immutable at Deriv.
+        self.live_next_target = {}  # sid -> digit
+
+        # Unified 0-9 scoring + target recycling.
+        self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
+        self.digit_history = {}          # sid -> deque(maxlen=100)
+        self.digit_score_snapshots = {}  # sid -> latest ranking
+        self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
+        self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
+        # Identifies this server process in persisted execution evidence.
+        # Useful for detecting overlapping Render instances during deploy/restart.
+        self.instance_id = uuid.uuid4().hex[:12]
+
+    async def start(self):
+        if not self.task or self.task.done():
+            self.task = asyncio.create_task(self.run_forever())
+
+    def _lock(self, sid: int) -> asyncio.Lock:
+        lock = self.session_locks.get(sid)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.session_locks[sid] = lock
+        return lock
+
+    async def _drop_client(self, user_id: str, account_id: str):
+        key = (user_id, account_id)
+        client = self.clients.pop(key, None)
+        if client:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    async def _client(self, user_id: str, account_id: str):
+        key = (user_id, account_id)
+        client = self.clients.get(key)
+
+        if client and client.is_open():
+            return client
+
+        if client:
+            await self._drop_client(user_id, account_id)
+
+        db = SessionLocal()
         try:
-            text = f"{float(quote):.{int(pip)}f}" if pip is not None else str(quote)
-        except Exception:
-            text = str(quote)
-        digits = [c for c in text if c.isdigit()]
-        return int(digits[-1]) if digits else None
+            cred = (
+                db.query(DerivCredential)
+                .filter(DerivCredential.user_id == user_id)
+                .first()
+            )
 
-    async def start_stream(self):
-        if self.subscription_id:
-            return
-        await self.client.connect()
-        self.subscription_id = await self.client.subscribe_ticks(
-            self.symbol, self._on_tick
+            if not cred:
+                raise RuntimeError("AUTH: Deriv account is not connected")
+
+            if cred.expires_at and cred.expires_at <= datetime.utcnow():
+                raise RuntimeError(
+                    "AUTH: Deriv OAuth access token expired; reconnect Deriv"
+                )
+
+            token = decrypt_token(cred.encrypted_access_token)
+        finally:
+            db.close()
+
+        try:
+            url = await get_ws_url(token, account_id)
+        except Exception as exc:
+            raise RuntimeError(f"OTP: {exc}") from exc
+
+        client = DerivWS(url)
+        try:
+            await client.connect()
+        except Exception as exc:
+            raise RuntimeError(f"WEBSOCKET: {exc}") from exc
+
+        self.clients[key] = client
+        return client
+
+    async def run_forever(self):
+        while True:
+            db = SessionLocal()
+            try:
+                ids = [
+                    row.id
+                    for row in (
+                        db.query(TradingSession)
+                        .filter(TradingSession.running == True)
+                        .all()
+                    )
+                ]
+            finally:
+                db.close()
+
+            for sid in ids:
+                task = self.session_tasks.get(sid)
+                if not task or task.done():
+                    self.session_tasks[sid] = asyncio.create_task(
+                        self._safe_step(sid)
+                    )
+
+            await asyncio.sleep(0.02)
+
+    async def _safe_step(self, sid: int):
+        try:
+            await self.step(sid)
+
+        except Exception as exc:
+            message = str(exc)
+            lower = message.lower()
+
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if not s:
+                    return
+
+                if (
+                    "buy_uncertain" in lower
+                    or "buy_claim_lost" in lower
+                    or "buy_sequence_mismatch" in lower
+                ):
+                    s.running = False
+                    s.paused = False
+                    if "buy_claim_lost" in lower:
+                        s.phase = "BUY_CLAIM_LOST"
+                    elif "buy_sequence_mismatch" in lower:
+                        s.phase = "BUY_SEQUENCE_MISMATCH"
+                    else:
+                        s.phase = "BUY_UNCERTAIN_STOPPED"
+                    s.last_error = message
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                if "ratelimit" in lower or "rate limit" in lower:
+                    s.running = True
+                    s.paused = False
+                    s.last_error = message
+                    s.phase = "RATE_LIMIT_BACKOFF"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    await asyncio.sleep(2.0)
+                    return
+
+                s.running = False
+                s.paused = False
+                s.last_error = message
+                s.phase = "ERROR"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                await self._drop_client(s.user_id, s.account_id)
+
+            finally:
+                db.close()
+
+    async def _currency_for(self, db, s) -> str:
+        account = (
+            db.query(DerivAccount)
+            .filter(
+                DerivAccount.user_id == s.user_id,
+                DerivAccount.account_id == s.account_id,
+            )
+            .first()
         )
 
-    async def _on_tick(self, data):
+        return (
+            str(account.currency).upper()
+            if account and account.currency
+            else "USD"
+        )
+
+    async def _request_proposal_payload(
+        self,
+        client,
+        *,
+        symbol,
+        digit,
+        stake,
+        trade_no,
+        currency,
+    ):
+        proposal = await client.proposal_digitmatch(
+            symbol=symbol,
+            digit=digit,
+            amount=stake,
+            duration=1,
+            currency=currency,
+        )
+
+        p = proposal.get("proposal") or {}
+        if not p.get("id"):
+            raise RuntimeError(
+                "PROPOSAL: Deriv returned no proposal id; "
+                f"keys={list(proposal.keys())}"
+            )
+
+        return {
+            "proposal_id": p["id"],
+            "ask_price": float(p.get("ask_price") or stake),
+            "payout": float(p.get("payout") or 0),
+            "digit": int(digit),
+            "stake": float(stake),
+            "trade_no": int(trade_no),
+            "currency": currency,
+        }
+
+    @staticmethod
+    def _tick_last_digit(tick: dict):
+        quote = tick.get("quote")
+        if quote is None:
+            return None
+
+        pip_size = tick.get("pip_size")
+
+        try:
+            if pip_size is not None:
+                text = f"{float(quote):.{int(pip_size)}f}"
+            else:
+                text = str(quote)
+        except Exception:
+            text = str(quote)
+
+        digits = [ch for ch in text if ch.isdigit()]
+        return int(digits[-1]) if digits else None
+
+    def _set_live_next_target(self, sid: int, digit):
+        if digit is None:
+            return False
+
+        digit = int(digit)
+        previous = self.live_next_target.get(sid)
+        self.live_next_target[sid] = digit
+
+        payload = self.prefetched_recovery.get(sid)
+        if payload and int(payload.get("digit", -1)) != digit:
+            self.prefetched_recovery.pop(sid, None)
+
+        return previous != digit
+
+    def _digit_history(self, sid: int):
+        history = self.digit_history.get(sid)
+        if history is None:
+            history = deque(maxlen=100)
+            self.digit_history[sid] = history
+        return history
+
+    def _score_all_digits(self, sid: int, exclude_digit=None):
+        snapshot = self.digit_scorer.rank(
+            list(self._digit_history(sid)),
+            exclude_digit=exclude_digit,
+        )
+        self.digit_score_snapshots[sid] = snapshot
+        return snapshot
+
+    def _choose_scored_digit(self, sid: int, exclude_digit=None, *, lock_target=False):
+        snapshot = self._score_all_digits(sid, exclude_digit=exclude_digit)
+        digit = snapshot.get("selected_digit")
+
+        if lock_target and digit is not None:
+            self.locked_target_snapshots[sid] = {
+                "digit": int(digit),
+                "snapshot": json.loads(json.dumps(snapshot)),
+                "locked_at": datetime.utcnow().isoformat(),
+            }
+
+        return (int(digit) if digit is not None else None), snapshot
+
+    def _trade_score_evidence(self, sid: int, digit: int):
+        locked = self.locked_target_snapshots.get(sid) or {}
+        snapshot = locked.get("snapshot")
+
+        if (
+            not snapshot
+            or int(locked.get("digit", -1)) != int(digit)
+        ):
+            snapshot = self._score_all_digits(sid)
+
+        row = None
+        for item in snapshot.get("ranking") or []:
+            if int(item.get("digit", -1)) == int(digit):
+                row = dict(item)
+                break
+
+        shadow = snapshot.get("shadow") or {}
+        shadow_row = None
+        for item in shadow.get("ranking") or []:
+            if int(item.get("digit", -1)) == int(shadow.get("selected_digit", -1)):
+                shadow_row = dict(item)
+                break
+
+        return {
+            "score_version": snapshot.get("version"),
+            "history_count": snapshot.get("history_count"),
+            "selected_digit": snapshot.get("selected_digit"),
+            "top_margin": snapshot.get("top_margin"),
+            "excluded_digit": snapshot.get("excluded_digit"),
+            "candidate": row,
+            "locked_target_digit": int(digit),
+            "locked_at": locked.get("locked_at"),
+            "shadow": {
+                "version": shadow.get("version"),
+                "selected_digit": shadow.get("selected_digit"),
+                "selected_row": shadow_row,
+                "dominance": shadow.get("dominance"),
+                "break_digit_target": shadow.get("break_digit_target"),
+                "alternating_pair_targets": shadow.get("alternating_pair_targets"),
+            },
+        }
+
+    async def _ensure_tick_subscription(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        client,
+    ):
+        existing = self.tick_subscriptions.get(sid)
+
+        if existing and existing.get("symbol") == str(symbol):
+            return
+
+        if existing:
+            old_id = existing.get("subscription_id")
+            if old_id:
+                asyncio.create_task(
+                    self._forget_quietly(client, old_id)
+                )
+            self.tick_subscriptions.pop(sid, None)
+
+        async def on_tick(data: dict):
+            await self._handle_strategy_tick(
+                sid=sid,
+                user_id=user_id,
+                account_id=account_id,
+                symbol=str(symbol),
+                data=data,
+            )
+
+        sub_id = await client.subscribe_ticks(str(symbol), on_tick)
+
+        self.tick_subscriptions[sid] = {
+            "subscription_id": sub_id,
+            "symbol": str(symbol),
+        }
+
+    async def _handle_strategy_tick(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        data,
+    ):
         tick = data.get("tick") or {}
-        digit = self._last_digit(tick)
+        epoch = int(tick.get("epoch") or 0)
+
+        if tick:
+            self.latest_ticks[sid] = dict(tick)
+
+        if epoch:
+            previous_epoch = int(self.latest_tick_epoch.get(sid) or 0)
+            self.latest_tick_epoch[sid] = max(previous_epoch, epoch)
+
+        digit = self._tick_last_digit(tick)
+        if digit is not None:
+            history = self._digit_history(sid)
+            if not epoch or int(epoch) >= int(self.latest_tick_epoch.get(sid) or 0):
+                if not history or not epoch or int(epoch) > int(getattr(self, '_last_scored_epoch', {}).get(sid, 0)):
+                    if not hasattr(self, '_last_scored_epoch'):
+                        self._last_scored_epoch = {}
+                    history.append(int(digit))
+                    if epoch:
+                        self._last_scored_epoch[sid] = int(epoch)
+                    live_snapshot = self._score_all_digits(sid)
+                    if live_snapshot.get("ready"):
+                        self._set_live_next_target(
+                            sid,
+                            live_snapshot.get("selected_digit"),
+                        )
+
+        active = self.fast_contracts.get(sid)
+
+        if not active or str(active.get("symbol")) != str(symbol) or active.get("decided"):
+            return
+
+        armed_after_epoch = int(active.get("armed_after_epoch") or 0)
+
+        if epoch and armed_after_epoch and epoch <= armed_after_epoch:
+            return
+
         if digit is None:
             return
 
-        self.latest_tick = {
-            "epoch": int(tick.get("epoch") or 0),
-            "quote": tick.get("quote"),
-            "pip_size": tick.get("pip_size"),
+        active["decided"] = True
+        active["decision_epoch"] = epoch
+        active["observed_digit"] = digit
+
+        target_digit = int(active["target_digit"])
+        contract_id = str(active["contract_id"])
+        is_win = digit == target_digit
+
+        active["fast_result"] = "WIN" if is_win else "LOSS"
+
+        async with self._lock(sid):
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+                if not s:
+                    return
+
+                current_fast = self.fast_contracts.get(sid)
+
+                if (
+                    not current_fast
+                    or str(current_fast.get("contract_id")) != contract_id
+                ):
+                    return
+
+                # Persist the exact first eligible post-purchase tick that
+                # drove the fast result. This separates a T+0 coincidence from
+                # the paid contract's T+1 decision.
+                fast_log = (
+                    db.query(TradeLog)
+                    .filter(
+                        TradeLog.trading_session_id == sid,
+                        TradeLog.contract_id == contract_id,
+                    )
+                    .order_by(TradeLog.id.desc())
+                    .first()
+                )
+
+                if fast_log:
+                    try:
+                        fast_raw = json.loads(fast_log.raw_json or "{}")
+                        if not isinstance(fast_raw, dict):
+                            fast_raw = {"previous_raw": fast_raw}
+                    except Exception:
+                        fast_raw = {"previous_raw_text": fast_log.raw_json}
+
+                    fast_evidence = fast_raw.get("dms_score_evidence") or {}
+                    if not isinstance(fast_evidence, dict):
+                        fast_evidence = {}
+
+                    alignment = fast_evidence.get("alignment") or {}
+                    if not isinstance(alignment, dict):
+                        alignment = {}
+
+                    alignment["fast_decision"] = {
+                        "target_digit": int(target_digit),
+                        "armed_after_epoch": int(armed_after_epoch),
+                        "decision_epoch": int(epoch or 0),
+                        "observed_digit": int(digit),
+                        "observed_quote": tick.get("quote"),
+                        "observed_pip_size": tick.get("pip_size"),
+                        "result": "WIN" if is_win else "LOSS",
+                        "digit_matches_target": bool(is_win),
+                        "raw_tick": dict(tick),
+                    }
+                    alignment["verdict"] = (
+                        "FAST_WIN_WAITING_DERIV"
+                        if is_win
+                        else "FAST_LOSS_WAITING_DERIV"
+                    )
+
+                    fast_evidence["alignment"] = alignment
+                    fast_raw["dms_score_evidence"] = fast_evidence
+                    fast_log.raw_json = json.dumps(fast_raw)
+                    db.flush()
+
+                if is_win:
+                    self.prefetched_recovery.pop(sid, None)
+
+                    prefetch_task = self.prefetch_tasks.pop(sid, None)
+                    if prefetch_task and not prefetch_task.done():
+                        prefetch_task.cancel()
+
+                    s.running = False
+                    s.paused = False
+                    s.phase = "FAST_WON"
+                    self.locked_target_snapshots.pop(sid, None)
+                    s.last_error = None
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                if int(s.current_trade) >= int(s.max_trades):
+                    self.prefetched_recovery.pop(sid, None)
+
+                    prefetch_task = self.prefetch_tasks.pop(sid, None)
+                    if prefetch_task and not prefetch_task.done():
+                        prefetch_task.cancel()
+
+                    s.running = False
+                    s.phase = "MAX_TRADES_REACHED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                expected_trade_no = int(s.current_trade) + 1
+                expected_stake = round(
+                    float(s.current_stake) * float(s.multiplier),
+                    2,
+                )
+
+                payload = self.prefetched_recovery.pop(sid, None)
+
+                if not payload:
+                    prefetch_task = self.prefetch_tasks.get(sid)
+                    if prefetch_task and not prefetch_task.done():
+                        try:
+                            await asyncio.shield(prefetch_task)
+                        except Exception:
+                            pass
+                        payload = self.prefetched_recovery.pop(sid, None)
+
+                desired_next = self.live_next_target.get(sid)
+
+                if desired_next is None:
+                    desired_next, _ = self._choose_scored_digit(
+                        sid,
+                        lock_target=True,
+                    )
+                    if desired_next is not None:
+                        self._set_live_next_target(
+                            sid,
+                            desired_next,
+                        )
+
+                if desired_next is not None:
+                    next_digit = int(desired_next)
+                    old_digit = int(s.candidate_digit)
+                    s.candidate_digit = next_digit
+                    s.phase = (
+                        f"LIVE_RANK_SWITCH_{old_digit}_TO_{next_digit}"
+                        if next_digit != old_digit
+                        else f"LIVE_RANK_KEEP_{next_digit}"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                s.current_stake = expected_stake
+                s.phase = "FAST_RECOVERING"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                valid_prefetch = bool(
+                    payload
+                    and int(payload.get("trade_no") or 0)
+                    == expected_trade_no
+                    and int(payload.get("digit"))
+                    == int(s.candidate_digit)
+                    and abs(
+                        float(payload.get("stake") or 0)
+                        - float(s.current_stake)
+                    ) <= 0.005
+                )
+
+                if not valid_prefetch:
+                    s.phase = "FAST_RECOVERY_PREFETCH_MISSED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                    new_digit, _ = self._choose_scored_digit(
+                        sid,
+                        lock_target=True,
+                    )
+                    if new_digit is not None:
+                        s.candidate_digit = int(new_digit)
+                        self._set_live_next_target(
+                            sid,
+                            int(new_digit),
+                        )
+
+                    currency = await self._currency_for(db, s)
+                    client = await self._client(user_id, account_id)
+
+                    payload = await self._request_proposal_payload(
+                        client,
+                        symbol=s.symbol,
+                        digit=s.candidate_digit,
+                        stake=s.current_stake,
+                        trade_no=expected_trade_no,
+                        currency=currency,
+                    )
+
+                client = await self._client(user_id, account_id)
+
+                await self._execute_buy(
+                    db,
+                    s,
+                    client,
+                    payload,
+                    prearmed=True,
+                )
+
+            finally:
+                db.close()
+
+    async def _forget_quietly(self, client, sub_id):
+        try:
+            await client.forget(sub_id)
+        except Exception:
+            pass
+
+    async def step(self, sid: int):
+        async with self._lock(sid):
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+
+                if not s or not s.running or s.paused:
+                    return
+
+                if s.last_error:
+                    if "mismatch" not in str(s.last_error).lower():
+                        s.last_error = None
+                        db.commit()
+
+                client = await self._client(
+                    s.user_id,
+                    s.account_id,
+                )
+
+                await self._ensure_tick_subscription(
+                    sid=s.id,
+                    user_id=s.user_id,
+                    account_id=s.account_id,
+                    symbol=s.symbol,
+                    client=client,
+                )
+
+                fast_owner = self.fast_contracts.get(sid)
+                if (
+                    int(s.current_trade or 0) > 0
+                    and fast_owner
+                    and int(fast_owner.get("trade_no") or 0)
+                    == int(s.current_trade)
+                ):
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                if s.open_contract_id:
+                    contract_key = (
+                        sid,
+                        str(s.open_contract_id),
+                    )
+
+                    if contract_key not in self.contract_subscriptions:
+                        asyncio.create_task(
+                            self._subscribe_open_contract(
+                                sid=sid,
+                                user_id=s.user_id,
+                                account_id=s.account_id,
+                                contract_id=str(s.open_contract_id),
+                                client=client,
+                            )
+                        )
+
+                    s.phase = (
+                        "RECOVERY_PREARMED"
+                        if sid in self.prefetched_recovery
+                        else "PIPELINE_ACTIVE"
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+
+                if s.pending_real_confirmation:
+                    s.phase = "WAITING_REAL_CONFIRMATION"
+                    db.commit()
+                    return
+
+                if s.current_trade >= s.max_trades:
+                    s.running = False
+                    s.phase = "MAX_TRADES_REACHED"
+                    db.commit()
+                    return
+
+                if int(s.current_trade) == 0:
+                    scored_digit, snapshot = self._choose_scored_digit(s.id, lock_target=True)
+                    if scored_digit is None:
+                        s.phase = "DIGIT_SCORE_WARMING"
+                        s.last_error = (
+                            "Scoring digits 0-9 from canonical ticks "
+                            f"({snapshot.get('history_count', 0)}/"
+                            f"{snapshot.get('minimum_history', 10)})"
+                        )
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    s.candidate_digit = int(scored_digit)
+                    self._set_live_next_target(
+                        s.id,
+                        int(scored_digit),
+                    )
+                    s.last_error = None
+                    s.phase = "DIGIT_SCORE_READY"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+                if s.candidate_digit is None:
+                    s.phase = "WAITING_CANDIDATE"
+                    db.commit()
+                    return
+
+                currency = await self._currency_for(db, s)
+
+                s.phase = "REQUESTING_PROPOSAL"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                try:
+                    payload = await self._request_proposal_payload(
+                        client,
+                        symbol=s.symbol,
+                        digit=s.candidate_digit,
+                        stake=s.current_stake,
+                        trade_no=s.current_trade + 1,
+                        currency=currency,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "PROPOSAL "
+                        f"[{s.symbol}/{currency}/digit {s.candidate_digit}]: "
+                        f"{exc}"
+                    ) from exc
+
+                await self._execute_buy(
+                    db,
+                    s,
+                    client,
+                    payload,
+                    prearmed=False,
+                )
+
+            finally:
+                db.close()
+
+    @staticmethod
+    def _pending_json(value):
+        try:
+            parsed = json.loads(value or "{}")
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _claim_buy(self, db, sid: int, payload: dict):
+        row = (
+            db.query(TradingSession)
+            .filter(TradingSession.id == int(sid))
+            .with_for_update()
+            .one_or_none()
+        )
+
+        if not row or not row.running or row.paused:
+            db.rollback()
+            return None
+
+        trade_no = int(payload.get("trade_no") or 0)
+        digit = int(payload.get("digit"))
+        stake = round(float(payload.get("stake") or 0), 2)
+        expected_trade_no = int(row.current_trade or 0) + 1
+
+        if trade_no != expected_trade_no:
+            db.rollback()
+            return None
+
+        if row.candidate_digit is None or int(row.candidate_digit) != digit:
+            db.rollback()
+            return None
+
+        if abs(float(row.current_stake or 0) - stake) > 0.005:
+            db.rollback()
+            return None
+
+        pending = self._pending_json(row.pending_trade_json)
+
+        if (
+            pending.get("kind") == "BUY_CLAIM"
+            and int(pending.get("trade_no") or 0) == trade_no
+        ):
+            db.rollback()
+            return None
+
+        claim_token = uuid.uuid4().hex
+
+        row.pending_trade_json = json.dumps({
+            "kind": "BUY_CLAIM",
+            "token": claim_token,
+            "trade_no": trade_no,
             "digit": digit,
+            "stake": stake,
+            "instance_id": self.instance_id,
+            "claimed_at": datetime.utcnow().isoformat(),
+        })
+        row.phase = f"BUY_CLAIMED_{trade_no}"
+        row.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "token": claim_token,
+            "trade_no": trade_no,
+            "digit": digit,
+            "stake": stake,
+            "instance_id": self.instance_id,
         }
-        self.history.append(digit)
-        self.latest_score = self.scorer.rank(self.history)
 
-        # Settle teaching/DEMO basket on the first canonical future tick.
-        if self.open_basket and self.open_basket.status == "OPEN":
-            if int(self.latest_tick["epoch"]) > int(self.open_basket.source_epoch):
-                await self._settle_demo_basket(self.latest_tick)
+    def _claim_is_owned(self, row, claim: dict) -> bool:
+        pending = self._pending_json(row.pending_trade_json)
+        return bool(
+            pending.get("kind") == "BUY_CLAIM"
+            and pending.get("token") == claim.get("token")
+            and int(pending.get("trade_no") or 0)
+            == int(claim.get("trade_no") or 0)
+        )
 
-    async def configure(self, mode=None, symbol=None, basket_stake=None):
-        if mode:
-            mode = str(mode).upper()
-            if mode not in {"DEMO", "REAL"}:
-                raise ValueError("mode must be DEMO or REAL")
-            self.mode = mode
-        if symbol:
-            self.symbol = str(symbol)
-        if basket_stake is not None:
-            value = float(basket_stake)
-            if value <= 0:
-                raise ValueError("basket_stake must be > 0")
-            self.basket_stake = round(value, 2)
+    async def _execute_buy(
+        self,
+        db,
+        s,
+        client,
+        payload,
+        *,
+        prearmed: bool,
+    ):
+        claim = self._claim_buy(db, s.id, payload)
 
-    async def open_next_basket(self):
-        await self.start_stream()
-        async with self._lock:
-            if self.open_basket and self.open_basket.status in {"ARMED", "OPEN"}:
-                raise RuntimeError("A basket is already open")
-            if not self.latest_score.get("ready"):
-                raise RuntimeError("Scorer is still warming up")
-            if not self.latest_tick:
-                raise RuntimeError("No canonical tick available")
+        if not claim:
+            return False
 
-            top4 = self.latest_score["top4"]
-            total = round(float(self.basket_stake), 2)
-            per_leg = round(total / 4.0, 2)
+        s = db.get(TradingSession, s.id)
 
-            # Force exact cent accounting: final leg absorbs rounding remainder.
-            leg_stakes = [per_leg, per_leg, per_leg, round(total - 3*per_leg, 2)]
+        await self._ensure_tick_subscription(
+            sid=s.id,
+            user_id=s.user_id,
+            account_id=s.account_id,
+            symbol=s.symbol,
+            client=client,
+        )
 
-            ranked = [
-                RankedDigit(rank=i+1, digit=int(row["digit"]), score=float(row["score"]))
-                for i, row in enumerate(top4)
-            ]
-            legs = [
-                Leg(rank=r.rank, digit=r.digit, stake=leg_stakes[i])
-                for i, r in enumerate(ranked)
-            ]
+        s.updated_at = datetime.utcnow()
+        db.commit()
 
-            self.basket_no += 1
-            basket = Basket(
-                basket_no=self.basket_no,
-                symbol=self.symbol,
-                account_mode=self.mode,
-                source_epoch=int(self.latest_tick["epoch"]),
-                source_digit=int(self.latest_tick["digit"]),
-                total_stake=total,
-                stake_per_leg=per_leg,
-                ranked=ranked,
-                legs=legs,
+        armed_after_epoch = int(
+            self.latest_tick_epoch.get(s.id) or 0
+        )
+
+        # Freeze the exact canonical market snapshot visible immediately before
+        # BUY. This is T+0 context only; it is never treated as the paid
+        # one-tick contract result.
+        purchase_t0_tick = dict(self.latest_ticks.get(s.id) or {})
+        purchase_t0_epoch = int(
+            purchase_t0_tick.get("epoch")
+            or armed_after_epoch
+            or 0
+        )
+        purchase_t0_digit = self._tick_last_digit(purchase_t0_tick)
+
+        # Check account mode to pass to WebSocket buy call
+        is_demo = str(s.account_mode).upper() == "DEMO"
+
+        try:
+            result = await client.buy(
+                payload["proposal_id"],
+                payload["ask_price"],
+                demo=is_demo,
+            )
+        except Exception as exc:
+            row = (
+                db.query(TradingSession)
+                .filter(TradingSession.id == int(s.id))
+                .with_for_update()
+                .one_or_none()
+            )
+            if row and self._claim_is_owned(row, claim):
+                row.running = False
+                row.paused = False
+                row.phase = "BUY_UNCERTAIN_STOPPED"
+                row.last_error = (
+                    f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+                )
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(
+                f"BUY_UNCERTAIN trade {claim['trade_no']}: {exc}"
+            ) from exc
+
+        buy = result.get("buy") or {}
+
+        if not buy.get("contract_id"):
+            row = (
+                db.query(TradingSession)
+                .filter(TradingSession.id == int(s.id))
+                .with_for_update()
+                .one_or_none()
+            )
+            if row and self._claim_is_owned(row, claim):
+                row.running = False
+                row.phase = "BUY_UNCERTAIN_STOPPED"
+                row.last_error = "BUY_UNCERTAIN: Deriv returned no contract_id"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(
+                "BUY_UNCERTAIN: Deriv returned no contract_id; "
+                f"keys={list(result.keys())}"
             )
 
-            if self.mode == "REAL":
-                # REAL mode is deliberately read-only/signal-only in this build.
-                basket.status = "REAL_SIGNAL_ONLY"
-                self.baskets.append(basket)
-                await send_telegram(
-                    "DigitMatchStar TOP-4 REAL teaching signal\n"
-                    f"Basket #{basket.basket_no}\n"
-                    f"Top 4: {', '.join(str(x.digit) for x in ranked)}\n"
-                    f"Total stake model: ${total:.2f}\n"
-                    "No real-money orders were sent."
+        contract_id = str(buy["contract_id"])
+
+        row = (
+            db.query(TradingSession)
+            .filter(TradingSession.id == int(s.id))
+            .with_for_update()
+            .one_or_none()
+        )
+
+        if not row or not self._claim_is_owned(row, claim):
+            if row:
+                row.running = False
+                row.phase = "BUY_CLAIM_LOST"
+                row.last_error = (
+                    f"BUY_CLAIM_LOST trade {claim['trade_no']} "
+                    f"contract {contract_id}"
                 )
-                return basket
-
-            # DEMO execution uses actual Deriv proposals/buys.
-            for leg in basket.legs:
-                prop = await self.client.proposal_digitmatch(
-                    self.symbol, leg.digit, leg.stake, self.currency
-                )
-                leg.proposal_id = prop["id"]
-                leg.payout = float(prop.get("payout") or 0)
-
-            # Buy all 4 DEMO legs as one basket.
-            for leg in basket.legs:
-                buy = await self.client.buy(leg.proposal_id, leg.stake)
-                leg.contract_id = str(buy.get("contract_id") or "")
-                # Use actual Deriv buy price where returned.
-                if buy.get("buy_price") is not None:
-                    leg.stake = float(buy["buy_price"])
-
-            basket.total_stake = round(sum(x.stake for x in basket.legs), 2)
-            basket.status = "OPEN"
-            self.open_basket = basket
-            self.total_staked += basket.total_stake
-
-            await send_telegram(
-                "DigitMatchStar TOP-4 DEMO basket OPEN\n"
-                f"Basket #{basket.basket_no} · {basket.symbol}\n"
-                f"Top 4: {', '.join(str(x.digit) for x in ranked)}\n"
-                f"Stake: ${basket.total_stake:.2f} "
-                f"(${basket.total_stake/4:.2f} × 4)"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+            raise RuntimeError(
+                f"BUY_CLAIM_LOST trade {claim['trade_no']} "
+                f"contract {contract_id}"
             )
-            return basket
 
-    async def _settle_demo_basket(self, tick):
-        basket = self.open_basket
-        if not basket or basket.status != "OPEN":
+        if int(row.current_trade or 0) + 1 != int(claim["trade_no"]):
+            row.running = False
+            row.phase = "BUY_SEQUENCE_MISMATCH"
+            row.last_error = (
+                f"BUY_SEQUENCE_MISMATCH expected "
+                f"{int(row.current_trade or 0) + 1}, "
+                f"bought {claim['trade_no']} contract {contract_id}"
+            )
+            row.updated_at = datetime.utcnow()
+            db.commit()
+            raise RuntimeError(row.last_error)
+
+        score_evidence = self._trade_score_evidence(
+            row.id,
+            int(payload["digit"]),
+        )
+
+        purchase_epoch = int(
+            buy.get("start_time")
+            or buy.get("purchase_time")
+            or armed_after_epoch
+            or 0
+        )
+
+        score_evidence["alignment"] = {
+            "purchase": {
+                "target_digit": int(payload["digit"]),
+                "armed_after_epoch": int(armed_after_epoch),
+                "purchase_epoch": int(purchase_epoch),
+                "t0_epoch": int(purchase_t0_epoch),
+                "t0_digit": (
+                    int(purchase_t0_digit)
+                    if purchase_t0_digit is not None
+                    else None
+                ),
+                "t0_quote": purchase_t0_tick.get("quote"),
+                "t0_pip_size": purchase_t0_tick.get("pip_size"),
+                "t0_matches_target": bool(
+                    purchase_t0_digit is not None
+                    and int(purchase_t0_digit) == int(payload["digit"])
+                ),
+                "note": "T+0 is pre-purchase context only; not a contract result",
+            },
+            "fast_decision": None,
+            "deriv_settlement": None,
+            "verdict": "OPEN_WAITING_FAST_DECISION",
+        }
+
+        db.add(
+            TradeLog(
+                user_id=row.user_id,
+                trading_session_id=row.id,
+                trade_no=int(payload["trade_no"]),
+                account_mode=row.account_mode,
+                account_id=row.account_id,
+                symbol=row.symbol,
+                digit=int(payload["digit"]),
+                stake=float(payload["stake"]),
+                contract_id=contract_id,
+                status="OPEN",
+                buy_price=float(
+                    buy.get("buy_price")
+                    or payload["ask_price"]
+                ),
+                payout=payload["payout"],
+                raw_json=json.dumps({
+                    "deriv_buy": result,
+                    "dms_score_evidence": score_evidence,
+                    "execution_integrity": {
+                        "instance_id": self.instance_id,
+                        "buy_claim_token": claim["token"],
+                        "claimed_trade_no": claim["trade_no"],
+                        "prearmed": bool(prearmed),
+                    },
+                }),
+            )
+        )
+
+        decision_after_epoch = max(
+            armed_after_epoch,
+            purchase_epoch,
+        )
+
+        self.fast_contracts[row.id] = {
+            "contract_id": contract_id,
+            "target_digit": int(payload["digit"]),
+            "symbol": str(row.symbol),
+            "trade_no": int(payload["trade_no"]),
+            "armed_after_epoch": decision_after_epoch,
+            "score_evidence": score_evidence,
+            "buy_claim_token": claim["token"],
+            "instance_id": self.instance_id,
+            "decided": False,
+        }
+
+        row.open_contract_id = contract_id
+        row.phase = "PIPELINE_ACTIVE"
+        row.current_trade = int(payload["trade_no"])
+        row.pending_trade_json = None
+        row.pending_real_confirmation = False
+        row.last_error = None
+        row.updated_at = datetime.utcnow()
+        db.commit()
+
+        s = db.get(TradingSession, row.id)
+
+        if s.current_trade < s.max_trades:
+            existing = self.prefetch_tasks.get(s.id)
+
+            if not existing or existing.done():
+                planned_digit = self.live_next_target.get(s.id)
+
+                if planned_digit is None:
+                    candidate, _snapshot = self._choose_scored_digit(
+                        s.id,
+                        lock_target=True,
+                    )
+                    if candidate is not None:
+                        planned_digit = int(candidate)
+                        self._set_live_next_target(
+                            s.id,
+                            planned_digit,
+                        )
+
+                if planned_digit is None:
+                    planned_digit = int(s.candidate_digit)
+
+                planned_digit = int(planned_digit)
+
+                next_stake = round(
+                    float(s.current_stake)
+                    * float(s.multiplier),
+                    2,
+                )
+                next_trade_no = int(s.current_trade) + 1
+
+                task = asyncio.create_task(
+                    self._prefetch_next_recovery(
+                        sid=s.id,
+                        user_id=s.user_id,
+                        account_id=s.account_id,
+                        symbol=s.symbol,
+                        digit=planned_digit,
+                        next_stake=next_stake,
+                        next_trade_no=next_trade_no,
+                        owner_contract_id=contract_id,
+                        owner_trade_no=int(s.current_trade),
+                    )
+                )
+                self.prefetch_tasks[s.id] = task
+
+        cached_tick = self.latest_ticks.get(s.id)
+
+        if cached_tick:
+            cached_epoch = int(cached_tick.get("epoch") or 0)
+            if cached_epoch > decision_after_epoch:
+                asyncio.create_task(
+                    self._handle_strategy_tick(
+                        sid=s.id,
+                        user_id=s.user_id,
+                        account_id=s.account_id,
+                        symbol=str(s.symbol),
+                        data={"tick": dict(cached_tick)},
+                    )
+                )
+
+        asyncio.create_task(
+            self._subscribe_open_contract(
+                sid=s.id,
+                user_id=s.user_id,
+                account_id=s.account_id,
+                contract_id=contract_id,
+                client=client,
+            )
+        )
+
+        return True
+
+    async def _prefetch_next_recovery(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        symbol,
+        digit,
+        next_stake,
+        next_trade_no,
+        owner_contract_id,
+        owner_trade_no,
+    ):
+        try:
+            client = await self._client(
+                user_id,
+                account_id,
+            )
+
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+
+                fast_owner = self.fast_contracts.get(sid)
+                if (
+                    not s
+                    or not s.running
+                    or not fast_owner
+                    or str(fast_owner.get("contract_id"))
+                    != str(owner_contract_id)
+                    or int(fast_owner.get("trade_no") or 0)
+                    != int(owner_trade_no)
+                    or int(s.current_trade or 0)
+                    != int(owner_trade_no)
+                ):
+                    return
+
+                currency = await self._currency_for(
+                    db,
+                    s,
+                )
+
+            finally:
+                db.close()
+
+            payload = await self._request_proposal_payload(
+                client,
+                symbol=symbol,
+                digit=digit,
+                stake=next_stake,
+                trade_no=next_trade_no,
+                currency=currency,
+            )
+
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+
+                fast_owner = self.fast_contracts.get(sid)
+                if (
+                    s
+                    and s.running
+                    and fast_owner
+                    and str(fast_owner.get("contract_id"))
+                    == str(owner_contract_id)
+                    and int(fast_owner.get("trade_no") or 0)
+                    == int(owner_trade_no)
+                    and int(s.current_trade) + 1
+                    == int(next_trade_no)
+                ):
+                    payload["owner_contract_id"] = str(owner_contract_id)
+                    payload["owner_trade_no"] = int(owner_trade_no)
+                    self.prefetched_recovery[sid] = payload
+                    s.phase = "RECOVERY_PREARMED"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
+            finally:
+                db.close()
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            self.prefetched_recovery.pop(sid, None)
+            db = SessionLocal()
+            try:
+                s = db.get(TradingSession, sid)
+                if s and s.running:
+                    s.last_error = f"PREFETCH: {exc}"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+            finally:
+                db.close()
+
+        finally:
+            current = self.prefetch_tasks.get(sid)
+
+            if current is asyncio.current_task():
+                self.prefetch_tasks.pop(sid, None)
+
+    async def _subscribe_open_contract(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        client,
+    ):
+        key = (
+            sid,
+            str(contract_id),
+        )
+
+        if key in self.contract_subscriptions or key in self.contract_poll_tasks:
             return
 
-        outcome_digit = int(tick["digit"])
-        basket.outcome_digit = outcome_digit
-        basket.outcome_epoch = int(tick["epoch"])
+        async def on_contract_update(data: dict):
+            await self._handle_contract_update(
+                sid=sid,
+                user_id=user_id,
+                account_id=account_id,
+                contract_id=str(contract_id),
+                data=data,
+            )
 
-        gross = 0.0
-        for leg in basket.legs:
-            if leg.digit == outcome_digit:
-                leg.result = "WIN"
-                # For immediate teaching accounting, proposal payout is used.
-                # Authoritative Deriv settlement reconciliation can be added
-                # from proposal_open_contract if desired.
-                gross += float(leg.payout or 0)
-                leg.profit = round(float(leg.payout or 0) - leg.stake, 2)
-            else:
-                leg.result = "LOSS"
-                leg.profit = round(-leg.stake, 2)
+        try:
+            sub_id = await client.subscribe_contract(
+                str(contract_id),
+                on_contract_update,
+            )
+        except Exception:
+            sub_id = None
 
-        basket.gross_return = round(gross, 2)
-        basket.net_profit = round(gross - basket.total_stake, 2)
-        basket.status = "SETTLED"
-        basket.settled_at = time()
+        if sub_id:
+            self.contract_subscriptions[key] = sub_id
+            return
 
-        self.total_profit = round(self.total_profit + basket.net_profit, 2)
-        self.baskets.append(basket)
-        self.open_basket = None
+        async def poll_until_sold():
+            try:
+                for _ in range(150):
+                    await asyncio.sleep(0.20)
 
-        winning = [x for x in basket.legs if x.result == "WIN"]
-        winner_text = (
-            f"rank #{winning[0].rank} digit {winning[0].digit}"
-            if winning else "none"
+                    data = await client.contract_status(
+                        str(contract_id)
+                    )
+
+                    poc = (
+                        data.get("proposal_open_contract")
+                        or {}
+                    )
+
+                    await on_contract_update(data)
+
+                    if poc.get("is_sold"):
+                        return
+
+            except asyncio.CancelledError:
+                raise
+
+            except Exception:
+                return
+
+            finally:
+                self.contract_poll_tasks.pop(
+                    key,
+                    None,
+                )
+
+        self.contract_poll_tasks[key] = asyncio.create_task(
+            poll_until_sold()
         )
 
-        await send_telegram(
-            "DigitMatchStar TOP-4 DEMO basket SETTLED\n"
-            f"Basket #{basket.basket_no}\n"
-            f"Outcome digit: {outcome_digit}\n"
-            f"Winner: {winner_text}\n"
-            f"Basket net: {basket.net_profit:+.2f} USD\n"
-            f"Session P/L: {self.total_profit:+.2f} USD"
+    def _authoritative_cycle_summary(self, db, log):
+        if not log:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        target_trade_no = int(log.trade_no or 0)
+        if target_trade_no < 1:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        previous_rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.trading_session_id == int(log.trading_session_id),
+                TradeLog.id <= int(log.id),
+            )
+            .order_by(TradeLog.id.desc())
+            .all()
         )
 
-    def state(self):
-        score = self.latest_score or {}
+        cycle_start_id = None
+        for row in previous_rows:
+            if int(row.trade_no or 0) == 1:
+                cycle_start_id = int(row.id)
+                break
+
+        if cycle_start_id is None:
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": None,
+                "cycle_trades": 0,
+            }
+
+        rows = (
+            db.query(TradeLog)
+            .filter(
+                TradeLog.trading_session_id == int(log.trading_session_id),
+                TradeLog.id >= cycle_start_id,
+                TradeLog.id <= int(log.id),
+            )
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        by_trade = {}
+        duplicate = False
+        for row in rows:
+            no = int(row.trade_no or 0)
+            if no in by_trade:
+                duplicate = True
+            by_trade[no] = row
+
+        expected = set(range(1, target_trade_no + 1))
+        present = set(by_trade.keys())
+
+        all_present = (present == expected) and not duplicate
+        all_settled = all(
+            str(by_trade[n].status or "").upper() == "SETTLED"
+            and by_trade[n].profit is not None
+            for n in expected
+            if n in by_trade
+        ) if all_present else False
+
+        if not (all_present and all_settled):
+            return {
+                "authoritative": False,
+                "cycle_pnl": None,
+                "cycle_stake": sum(
+                    float(r.stake or 0)
+                    for r in rows
+                ),
+                "cycle_trades": len(rows),
+            }
+
+        cycle_pnl = sum(
+            float(by_trade[n].profit or 0)
+            for n in range(1, target_trade_no + 1)
+        )
+        cycle_stake = sum(
+            float(by_trade[n].stake or 0)
+            for n in range(1, target_trade_no + 1)
+        )
+
         return {
-            "mode": self.mode,
-            "symbol": self.symbol,
-            "basket_stake": self.basket_stake,
-            "running": self.running,
-            "latest_tick": self.latest_tick,
-            "score": score,
-            "open_basket": self.open_basket.as_dict() if self.open_basket else None,
-            "basket_count": len(self.baskets),
-            "total_staked": round(self.total_staked, 2),
-            "total_profit": round(self.total_profit, 2),
-            "real_execution_enabled": False,
-            "teaching_note": (
-                "REAL is signal/read-only in this build. "
-                "DEMO sends actual DEMO Digit Match orders."
-            ),
+            "authoritative": True,
+            "cycle_pnl": float(cycle_pnl),
+            "cycle_stake": float(cycle_stake),
+            "cycle_trades": target_trade_no,
         }
 
-engine = Top4BasketEngine()
+    async def _handle_contract_update(
+        self,
+        *,
+        sid,
+        user_id,
+        account_id,
+        contract_id,
+        data,
+    ):
+        poc = data.get("proposal_open_contract") or {}
+
+        if not poc.get("is_sold"):
+            return
+
+        key = (
+            sid,
+            str(contract_id),
+        )
+
+        async with self._lock(sid):
+            db = SessionLocal()
+
+            try:
+                s = db.get(TradingSession, sid)
+                if not s:
+                    return
+
+                log = (
+                    db.query(TradeLog)
+                    .filter(
+                        TradeLog.trading_session_id == sid,
+                        TradeLog.contract_id == str(contract_id),
+                    )
+                    .order_by(TradeLog.id.desc())
+                    .first()
+                )
+
+                if (
+                    log
+                    and str(log.status).upper() == "SETTLED"
+                ):
+                    return
+
+                profit = float(
+                    poc.get("profit") or 0
+                )
+
+                if log:
+                    log.status = "SETTLED"
+                    log.profit = profit
+                    log.settled_at = datetime.utcnow()
+
+                    try:
+                        existing_raw = json.loads(log.raw_json or "{}")
+                        if not isinstance(existing_raw, dict):
+                            existing_raw = {"previous_raw": existing_raw}
+                    except Exception:
+                        existing_raw = {"previous_raw_text": log.raw_json}
+
+                    existing_raw["deriv_settlement"] = data
+                    existing_raw["settlement_profit"] = float(profit)
+                    existing_raw["settlement_result"] = (
+                        "WIN" if profit > 0 else "LOSS"
+                    )
+
+                    exit_tick_value = (
+                        poc.get("exit_tick_display_value")
+                        if poc.get("exit_tick_display_value") is not None
+                        else poc.get("exit_tick")
+                    )
+                    if exit_tick_value is None:
+                        exit_tick_value = (
+                            poc.get("current_spot_display_value")
+                            if poc.get("current_spot_display_value") is not None
+                            else poc.get("current_spot")
+                        )
+
+                    settlement_digit = None
+                    if exit_tick_value is not None:
+                        exit_text = str(exit_tick_value)
+                        exit_digits = [ch for ch in exit_text if ch.isdigit()]
+                        if exit_digits:
+                            settlement_digit = int(exit_digits[-1])
+
+                    settlement_epoch = int(
+                        poc.get("exit_tick_time")
+                        or poc.get("date_expiry")
+                        or poc.get("sell_time")
+                        or 0
+                    )
+
+                    settlement_evidence = existing_raw.get("dms_score_evidence") or {}
+                    if not isinstance(settlement_evidence, dict):
+                        settlement_evidence = {}
+
+                    alignment = settlement_evidence.get("alignment") or {}
+                    if not isinstance(alignment, dict):
+                        alignment = {}
+
+                    purchase_alignment = alignment.get("purchase") or {}
+                    fast_alignment = alignment.get("fast_decision") or {}
+
+                    official_result = "WIN" if profit > 0 else "LOSS"
+                    fast_result = str(
+                        fast_alignment.get("result") or ""
+                    ).upper()
+
+                    if fast_result == "WIN" and official_result == "WIN":
+                        verdict = "FAST_WIN_DERIV_WIN"
+                    elif fast_result == "WIN" and official_result == "LOSS":
+                        verdict = "FAST_WIN_DERIV_LOSS_MISMATCH"
+                    elif fast_result == "LOSS" and official_result == "WIN":
+                        verdict = "FAST_LOSS_DERIV_WIN_MISMATCH"
+                    elif fast_result == "LOSS" and official_result == "LOSS":
+                        verdict = (
+                            "T0_MATCH_ONLY_DERIV_LOSS"
+                            if bool(purchase_alignment.get("t0_matches_target"))
+                            else "FAST_LOSS_DERIV_LOSS"
+                        )
+                    elif official_result == "WIN":
+                        verdict = "DERIV_WIN_NO_FAST_DECISION"
+                    else:
+                        verdict = (
+                            "T0_MATCH_ONLY_DERIV_LOSS"
+                            if bool(purchase_alignment.get("t0_matches_target"))
+                            else "DERIV_LOSS_NO_FAST_DECISION"
+                        )
+
+                    alignment["deriv_settlement"] = {
+                        "target_digit": int(log.digit),
+                        "settlement_epoch": int(settlement_epoch),
+                        "exit_tick": exit_tick_value,
+                        "settlement_digit": settlement_digit,
+                        "profit": float(profit),
+                        "result": official_result,
+                        "digit_matches_target": (
+                            bool(settlement_digit == int(log.digit))
+                            if settlement_digit is not None
+                            else bool(profit > 0)
+                        ),
+                        "contract_type": poc.get("contract_type"),
+                        "barrier": poc.get("barrier"),
+                    }
+                    alignment["verdict"] = verdict
+
+                    fast_epoch = fast_alignment.get("decision_epoch")
+                    purchase_epoch_for_delta = purchase_alignment.get("purchase_epoch")
+                    if fast_epoch and purchase_epoch_for_delta:
+                        alignment["purchase_to_fast_epoch_delta"] = (
+                            int(fast_epoch) - int(purchase_epoch_for_delta)
+                        )
+                    else:
+                        alignment["purchase_to_fast_epoch_delta"] = None
+
+                    settlement_evidence["alignment"] = alignment
+                    existing_raw["dms_score_evidence"] = settlement_evidence
+                    log.raw_json = json.dumps(existing_raw)
+
+                s.pnl = float(s.pnl or 0) + profit
+
+                account = (
+                    db.query(DerivAccount)
+                    .filter(
+                        DerivAccount.user_id == user_id,
+                        DerivAccount.account_id == account_id,
+                    )
+                    .first()
+                )
+
+                if (
+                    account
+                    and account.balance is not None
+                ):
+                    account.balance = (
+                        float(account.balance)
+                        + profit
+                    )
+                    account.updated_at = datetime.utcnow()
+
+                if (
+                    str(s.open_contract_id or "")
+                    == str(contract_id)
+                ):
+                    s.open_contract_id = None
+
+                fast = self.fast_contracts.get(sid)
+
+                if (
+                    fast
+                    and str(fast.get("contract_id"))
+                    == str(contract_id)
+                ):
+                    official = (
+                        "WIN"
+                        if profit > 0
+                        else "LOSS"
+                    )
+
+                    fast["official_result"] = official
+
+                    cycle_summary = self._authoritative_cycle_summary(
+                        db,
+                        log,
+                    )
+
+                    self.last_settlement_by_sid[sid] = {
+                        "contract_id": str(contract_id),
+                        "trade_no": int(log.trade_no) if log else None,
+                        "digit": int(log.digit) if log else int(fast.get("target_digit")),
+                        "stake": float(log.stake) if log and log.stake is not None else None,
+                        "buy_price": float(log.buy_price) if log and log.buy_price is not None else None,
+                        "payout": float(log.payout) if log and log.payout is not None else None,
+                        "profit": float(profit),
+                        "result": official,
+                        "settled_at": datetime.utcnow().isoformat(),
+                        "fast_decision_epoch": fast.get("decision_epoch"),
+                        "fast_observed_digit": fast.get("observed_digit"),
+                        "fast_result": fast.get("fast_result"),
+                        "deriv_settlement_epoch": int(
+                            poc.get("exit_tick_time")
+                            or poc.get("date_expiry")
+                            or poc.get("sell_time")
+                            or 0
+                        ),
+                        "deriv_exit_tick": (
+                            poc.get("exit_tick_display_value")
+                            if poc.get("exit_tick_display_value") is not None
+                            else poc.get("exit_tick")
+                        ),
+                        "cycle_pnl_authoritative": bool(
+                            cycle_summary.get("authoritative")
+                        ),
+                        "cycle_pnl": cycle_summary.get("cycle_pnl"),
+                        "cycle_total_stake": cycle_summary.get("cycle_stake"),
+                        "cycle_trade_count": cycle_summary.get("cycle_trades"),
+                    }
+
+                    if (
+                        fast.get("fast_result")
+                        and fast["fast_result"]
+                        != official
+                    ):
+                        s.running = False
+                        s.paused = False
+                        s.phase = "RECONCILE_MISMATCH"
+                        s.last_error = (
+                            "Fast tick result "
+                            f"{fast['fast_result']} disagreed with "
+                            f"Deriv settlement {official} for "
+                            f"contract {contract_id}"
+                        )
+
+                pending_win = self.last_settlement_by_sid.get(sid)
+                if (
+                    pending_win
+                    and str(pending_win.get("result") or "").upper() == "WIN"
+                    and not bool(pending_win.get("cycle_pnl_authoritative"))
+                ):
+                    winning_contract_id = str(
+                        pending_win.get("contract_id") or ""
+                    )
+                    winning_log = (
+                        db.query(TradeLog)
+                        .filter(
+                            TradeLog.trading_session_id == sid,
+                            TradeLog.contract_id == winning_contract_id,
+                        )
+                        .order_by(TradeLog.id.desc())
+                        .first()
+                    )
+                    if winning_log:
+                        refreshed = self._authoritative_cycle_summary(
+                            db,
+                            winning_log,
+                        )
+                        pending_win["cycle_pnl_authoritative"] = bool(
+                            refreshed.get("authoritative")
+                        )
+                        pending_win["cycle_pnl"] = refreshed.get("cycle_pnl")
+                        pending_win["cycle_total_stake"] = refreshed.get("cycle_stake")
+                        pending_win["cycle_trade_count"] = refreshed.get("cycle_trades")
+                        self.last_settlement_by_sid[sid] = pending_win
+
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+            finally:
+                db.close()
+
+        sub_id = self.contract_subscriptions.pop(
+            key,
+            None,
+        )
+
+        client = self.clients.get(
+            (user_id, account_id)
+        )
+
+        if client and sub_id:
+            asyncio.create_task(
+                self._forget_quietly(
+                    client,
+                    sub_id,
+                )
+            )
+
+        poll = self.contract_poll_tasks.pop(
+            key,
+            None,
+        )
+
+        if (
+            poll
+            and poll is not asyncio.current_task()
+            and not poll.done()
+        ):
+            poll.cancel()
+
+    def last_settlement_status(self, sid: int):
+        value = self.last_settlement_by_sid.get(int(sid))
+        return dict(value) if isinstance(value, dict) else None
+
+    async def confirm_real(self, user_id: str, session_id: int):
+        """Confirms and enables live execution for a REAL account trading session."""
+        db = SessionLocal()
+        try:
+            s = db.get(TradingSession, session_id)
+            if not s or str(s.user_id) != str(user_id):
+                raise RuntimeError("Trading session not found or unauthorized.")
+            
+            s.pending_real_confirmation = False
+            s.phase = "REAL_CONFIRMED"
+            s.updated_at = datetime.utcnow()
+            db.commit()
+            return True
+        finally:
+            db.close()
+
+
+engine = MultiUserEngine()

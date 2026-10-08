@@ -1,219 +1,541 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from pathlib import Path
-import csv
-import io
-import json
+from datetime import datetime
+from urllib.parse import urlparse
 
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from .config import settings
+from .db import SessionLocal
+from .models import TradingSession, DerivAccount
+from .security import current_user_id
+from .oauth import router as oauth_router
 from .engine import engine
 
-BASE = Path(__file__).resolve().parent.parent
 
 app = FastAPI(
-    title="DigitMatchStar Top-4 Ranked Basket",
-    version="1.0.0-demo-teaching",
+    title="DigitMatchStar Production OAuth Backend",
+    version="3.1.0-live-top-digit",
 )
 
-app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 
-class ConfigureRequest(BaseModel):
-    mode: str = "DEMO"
+def _normalise_origin(value: str) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _cors_origins():
+    """
+    Allow the configured frontend plus the canonical DigitMatchStar domains.
+
+    This prevents a www/non-www deployment mismatch from surfacing in the
+    browser as the opaque JavaScript error: TypeError: Failed to fetch.
+    """
+    values = {
+        _normalise_origin(settings.frontend_url),
+        "https://digitmatchstar.com",
+        "https://www.digitmatchstar.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    }
+
+    configured = _normalise_origin(settings.frontend_url)
+
+    if configured:
+        try:
+            parsed = urlparse(configured)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                host = parsed.hostname
+                port = f":{parsed.port}" if parsed.port else ""
+
+                if host.startswith("www."):
+                    values.add(f"{parsed.scheme}://{host[4:]}{port}")
+                else:
+                    values.add(f"{parsed.scheme}://www.{host}{port}")
+        except Exception:
+            pass
+
+    return sorted(x for x in values if x)
+
+
+ALLOWED_ORIGINS = _cors_origins()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+app.include_router(oauth_router)
+
+
+class SessionCreate(BaseModel):
+    account_id: str
     symbol: str = "R_10"
-    basket_stake: float = 10.0
+    base_stake: float = 1.0
+    multiplier: float = 1.15
+    max_trades: int = 15
+
+
+class Candidate(BaseModel):
+    digit: int
+
 
 @app.on_event("startup")
 async def startup():
-    try:
-        await engine.start_stream()
-    except Exception:
-        # UI will display stream state; startup remains available even if
-        # credentials/env are not configured yet.
-        pass
-
-@app.get("/")
-def index():
-    return FileResponse(BASE / "static" / "index.html")
-
-@app.get("/api/state")
-def state():
-    return engine.state()
-
-@app.post("/api/configure")
-async def configure(req: ConfigureRequest):
-    try:
-        await engine.configure(
-            mode=req.mode,
-            symbol=req.symbol,
-            basket_stake=req.basket_stake,
-        )
-        await engine.start_stream()
-        return engine.state()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-@app.post("/api/basket/open")
-async def open_basket():
-    try:
-        basket = await engine.open_next_basket()
-        return basket.as_dict()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    await engine.start()
 
 
-def _analytics_payload():
-    settled = [b for b in engine.baskets if b.status == "SETTLED"]
-
-    total = len(settled)
-    hits = 0
-    rank_wins = {1: 0, 2: 0, 3: 0, 4: 0}
-    rows = []
-    cumulative = 0.0
-
-    for b in settled:
-        winning_rank = None
-        for leg in b.legs:
-            if leg.result == "WIN":
-                winning_rank = int(leg.rank)
-                rank_wins[winning_rank] += 1
-                hits += 1
-                break
-
-        cumulative = round(cumulative + float(b.net_profit), 2)
-
-        rows.append({
-            "basket_no": b.basket_no,
-            "source_epoch": b.source_epoch,
-            "source_digit": b.source_digit,
-            "top4": [x.digit for x in b.ranked],
-            "scores": [x.score for x in b.ranked],
-            "outcome_epoch": b.outcome_epoch,
-            "outcome_digit": b.outcome_digit,
-            "hit": winning_rank is not None,
-            "winning_rank": winning_rank,
-            "total_stake": round(float(b.total_stake), 2),
-            "gross_return": round(float(b.gross_return), 2),
-            "net_profit": round(float(b.net_profit), 2),
-            "cumulative_profit": cumulative,
-        })
-
-    misses = total - hits
-    total_stake = round(sum(float(b.total_stake) for b in settled), 2)
-    total_return = round(sum(float(b.gross_return) for b in settled), 2)
-    net_profit = round(sum(float(b.net_profit) for b in settled), 2)
-
-    hit_rate = round((hits / total) * 100.0, 2) if total else 0.0
-    miss_rate = round((misses / total) * 100.0, 2) if total else 0.0
-    roi = round((net_profit / total_stake) * 100.0, 2) if total_stake else 0.0
-
-    profits = [float(b.net_profit) for b in settled]
-
+@app.get("/health")
+def health():
     return {
-        "settled_baskets": total,
-        "hits": hits,
-        "misses": misses,
-        "hit_rate_pct": hit_rate,
-        "miss_rate_pct": miss_rate,
-        "rank_wins": rank_wins,
-        "rank_win_rate_pct": {
-            str(rank): round((count / total) * 100.0, 2) if total else 0.0
-            for rank, count in rank_wins.items()
+        "ok": True,
+        "version": "3.1.0-live-top-digit",
+        "frontend_origin": _normalise_origin(settings.frontend_url),
+        "allowed_origins": ALLOWED_ORIGINS,
+        "strategy": {
+            "name": "LIVE_TOP_DIGIT",
+            "target_policy": "rank_1_each_canonical_tick",
+            "multi_loss_target_lock": False,
         },
-        "total_stake": total_stake,
-        "total_return": total_return,
-        "net_profit": net_profit,
-        "roi_pct": roi,
-        "average_profit_per_basket": round(net_profit / total, 2) if total else 0.0,
-        "best_basket_profit": round(max(profits), 2) if profits else 0.0,
-        "worst_basket_profit": round(min(profits), 2) if profits else 0.0,
-        "rows": rows,
     }
 
 
-@app.get("/api/analytics")
-def analytics():
-    return _analytics_payload()
+def owns_session(db, user_id, sid):
+    s = db.get(TradingSession, sid)
+
+    if not s or s.user_id != user_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+        )
+
+    return s
 
 
-@app.get("/api/analytics.json")
-def analytics_json():
-    return _analytics_payload()
+def digit_score_for_session(session_id: int):
+    """
+    Compatibility wrapper around the live top-digit scoring engine.
+
+    The engine exposes _score_all_digits internally. Keeping this adapter here
+    lets the frontend inspect the current ranking without duplicating scoring
+    logic in the API.
+    """
+    scorer = getattr(engine, "_score_all_digits", None)
+
+    if not callable(scorer):
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "error": "Digit score engine is not available",
+        }
+
+    try:
+        return scorer(int(session_id))
+    except Exception as exc:
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "error": str(exc),
+        }
 
 
-@app.get("/api/analytics.csv")
-def analytics_csv():
-    payload = _analytics_payload()
-    out = io.StringIO()
+@app.get("/sessions")
+def sessions(user_id: str = Depends(current_user_id)):
+    db = SessionLocal()
 
-    fields = [
-        "basket_no","source_epoch","source_digit","top4","scores",
-        "outcome_epoch","outcome_digit","hit","winning_rank",
-        "total_stake","gross_return","net_profit","cumulative_profit"
-    ]
-    w = csv.DictWriter(out, fieldnames=fields)
-    w.writeheader()
+    try:
+        rows = (
+            db.query(TradingSession)
+            .filter(TradingSession.user_id == user_id)
+            .all()
+        )
 
-    for row in payload["rows"]:
-        w.writerow({
-            **row,
-            "top4": " ".join(str(x) for x in row["top4"]),
-            "scores": " ".join(str(x) for x in row["scores"]),
-        })
+        result = []
 
-    out.write("\nSUMMARY\n")
-    summary = [
-        ("settled_baskets", payload["settled_baskets"]),
-        ("hits", payload["hits"]),
-        ("misses", payload["misses"]),
-        ("hit_rate_pct", payload["hit_rate_pct"]),
-        ("miss_rate_pct", payload["miss_rate_pct"]),
-        ("rank1_wins", payload["rank_wins"][1]),
-        ("rank2_wins", payload["rank_wins"][2]),
-        ("rank3_wins", payload["rank_wins"][3]),
-        ("rank4_wins", payload["rank_wins"][4]),
-        ("total_stake", payload["total_stake"]),
-        ("total_return", payload["total_return"]),
-        ("net_profit", payload["net_profit"]),
-        ("roi_pct", payload["roi_pct"]),
-        ("average_profit_per_basket", payload["average_profit_per_basket"]),
-        ("best_basket_profit", payload["best_basket_profit"]),
-        ("worst_basket_profit", payload["worst_basket_profit"]),
-    ]
-    out.write("metric,value\n")
-    for key, value in summary:
-        out.write(f"{key},{value}\n")
+        for s in rows:
+            acct = (
+                db.query(DerivAccount)
+                .filter(
+                    DerivAccount.user_id == user_id,
+                    DerivAccount.account_id == s.account_id,
+                )
+                .first()
+            )
 
-    return out.getvalue()
+            result.append(
+                {
+                    "id": s.id,
+                    "account_id": s.account_id,
+                    "account_mode": s.account_mode,
+                    "account_balance": acct.balance if acct else None,
+                    "account_currency": acct.currency if acct else None,
+                    "symbol": s.symbol,
+                    "running": s.running,
+                    "paused": s.paused,
+                    "phase": s.phase,
+                    "current_trade": s.current_trade,
+                    "max_trades": s.max_trades,
+                    "current_stake": s.current_stake,
+                    "candidate_digit": s.candidate_digit,
+                    "open_contract_id": s.open_contract_id,
+                    "pnl": s.pnl,
+                    "pending_real_confirmation": s.pending_real_confirmation,
+                    "last_error": s.last_error,
+                    "digit_score": digit_score_for_session(s.id),
+                    "target_policy": "rank_1_each_canonical_tick",
+                    "last_settlement": engine.last_settlement_status(s.id),
+                }
+            )
+
+        return result
+
+    finally:
+        db.close()
 
 
-@app.get("/api/history")
-def history():
-    return [b.as_dict() for b in engine.baskets]
+@app.get("/sessions/{sid}/tae/export")
+def removed_tae_export(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    """
+    Kept only so an old browser button does not crash the API.
 
-@app.get("/api/history.csv")
-def history_csv():
-    out = io.StringIO()
-    fields = [
-        "basket_no","symbol","account_mode","source_epoch",
-        "source_digit","top4","total_stake","outcome_epoch",
-        "outcome_digit","gross_return","net_profit","status"
-    ]
-    w = csv.DictWriter(out, fieldnames=fields)
-    w.writeheader()
-    for b in engine.baskets:
-        w.writerow({
-            "basket_no": b.basket_no,
-            "symbol": b.symbol,
-            "account_mode": b.account_mode,
-            "source_epoch": b.source_epoch,
-            "source_digit": b.source_digit,
-            "top4": " ".join(str(x.digit) for x in b.ranked),
-            "total_stake": b.total_stake,
-            "outcome_epoch": b.outcome_epoch,
-            "outcome_digit": b.outcome_digit,
-            "gross_return": b.gross_return,
-            "net_profit": b.net_profit,
-            "status": b.status,
-        })
-    return out.getvalue()
+    TAE no longer controls execution. The active engine scores digits 0-9 and
+    uses the current rank #1 as the next target without a multi-loss lock.
+    """
+    db = SessionLocal()
+    try:
+        owns_session(db, user_id, sid)
+    finally:
+        db.close()
+
+    return {
+        "schema": "DIGITMATCHSTAR_LIVE_TOP_DIGIT",
+        "session_id": sid,
+        "message": (
+            "Target Attraction execution was retired. "
+            "The active system scores digits 0-9 and uses the current "
+            "rank #1 as the next target without a multi-loss target lock."
+        ),
+        "digit_score": digit_score_for_session(sid),
+    }
+
+
+@app.post("/sessions")
+def create_session(
+    body: SessionCreate,
+    user_id: str = Depends(current_user_id),
+):
+    if body.base_stake <= 0:
+        raise HTTPException(status_code=400, detail="base_stake must be > 0")
+
+    if body.multiplier < 1:
+        raise HTTPException(status_code=400, detail="multiplier must be >= 1")
+
+    if body.max_trades < 1:
+        raise HTTPException(status_code=400, detail="max_trades must be >= 1")
+
+    db = SessionLocal()
+
+    try:
+        acct = (
+            db.query(DerivAccount)
+            .filter(
+                DerivAccount.user_id == user_id,
+                DerivAccount.account_id == body.account_id,
+            )
+            .first()
+        )
+
+        if not acct:
+            raise HTTPException(
+                status_code=400,
+                detail="Deriv account does not belong to this user",
+            )
+
+        account_type = str(acct.account_type or "").lower()
+        mode = "DEMO" if account_type == "demo" else "REAL"
+
+        s = (
+            db.query(TradingSession)
+            .filter(
+                TradingSession.user_id == user_id,
+                TradingSession.account_id == body.account_id,
+            )
+            .first()
+        )
+
+        if not s:
+            s = TradingSession(
+                user_id=user_id,
+                account_id=body.account_id,
+                account_mode=mode,
+            )
+            db.add(s)
+            db.flush()
+
+        if s.open_contract_id:
+            s.running = False
+            s.paused = False
+            s.phase = "RECONCILE_REQUIRED"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(s)
+
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "reconcile_required": True,
+                "open_contract_id": s.open_contract_id,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        if s.running:
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "running": True,
+                "already_running": True,
+                "reconcile_required": False,
+                "open_contract_id": None,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        s.account_mode = mode
+        s.symbol = body.symbol
+        s.base_stake = float(body.base_stake)
+        s.current_stake = float(body.base_stake)
+        s.multiplier = float(body.multiplier)
+        s.max_trades = int(body.max_trades)
+
+        s.current_trade = 0
+        s.pnl = 0.0
+        s.running = False
+        s.paused = False
+        s.pending_real_confirmation = False
+        s.pending_trade_json = None
+        s.last_error = None
+        s.phase = "CONFIGURED"
+        s.updated_at = datetime.utcnow()
+
+        # Candidate may remain from a previous idle session, but Trade 1 will
+        # be rescored by the server engine from canonical history.
+        db.commit()
+        db.refresh(s)
+
+        return {
+            "id": s.id,
+            "account_id": s.account_id,
+            "account_mode": s.account_mode,
+            "symbol": s.symbol,
+            "phase": s.phase,
+            "reconcile_required": False,
+            "current_trade": s.current_trade,
+            "max_trades": s.max_trades,
+            "candidate_digit": s.candidate_digit,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/candidate")
+def candidate(
+    sid: int,
+    body: Candidate,
+    user_id: str = Depends(current_user_id),
+):
+    if body.digit < 0 or body.digit > 9:
+        raise HTTPException(
+            status_code=400,
+            detail="digit must be 0..9",
+        )
+
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if s.running:
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "already_running": True,
+                "reconciling": bool(s.open_contract_id),
+                "open_contract_id": s.open_contract_id,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        if s.open_contract_id:
+            return {
+                "ok": True,
+                "session_id": s.id,
+                "candidate_digit": s.candidate_digit,
+                "reconcile_required": True,
+            }
+
+        # This sets the initial/fallback digit only. Once the server has enough
+        # canonical history, the engine scores 0-9 and chooses rank #1.
+        s.candidate_digit = int(body.digit)
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "session_id": s.id,
+            "candidate_digit": s.candidate_digit,
+            "reconcile_required": False,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/start")
+def start(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if s.open_contract_id:
+            s.running = True
+            s.paused = False
+            s.phase = "RECONCILING"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "reconciling": True,
+                "open_contract_id": s.open_contract_id,
+            }
+
+        # A fallback digit is accepted so START never fails merely because
+        # scoring history is warming. The engine replaces it with rank #1 as
+        # soon as scoring is ready.
+        if s.candidate_digit is None:
+            s.candidate_digit = 5
+
+        s.running = True
+        s.paused = False
+        s.phase = "STARTING"
+        s.last_error = None
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "id": s.id,
+            "phase": s.phase,
+            "reconciling": False,
+            "candidate_digit": s.candidate_digit,
+            "max_trades": s.max_trades,
+            "target_policy": "rank_1_each_canonical_tick",
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/pause")
+def pause(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+        s.paused = True
+        s.phase = "PAUSED"
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "phase": s.phase,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/stop")
+def stop(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        s.running = False
+        s.paused = False
+
+        if s.open_contract_id:
+            s.phase = "STOPPED_WAITING_SETTLEMENT"
+        else:
+            s.phase = "STOPPED"
+
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "phase": s.phase,
+            "open_contract_id": s.open_contract_id,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/real/confirm")
+async def confirm_real(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    try:
+        await engine.confirm_real(user_id, sid)
+
+        return {
+            "ok": True,
+            "session_id": sid,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        )

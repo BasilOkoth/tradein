@@ -1,0 +1,29 @@
+FULL MERGED TOP-4 PACKAGE
+
+This ZIP is intended to REPLACE the mixed contents currently in BasilOkoth/tradein.
+
+Recommended:
+1. Create a fresh branch/repo from this package, or delete the current mixed files.
+2. Upload the CONTENTS of this ZIP preserving folders.
+3. Render Blueprint uses render.yaml.
+4. Render start command:
+   uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+
+Required Render secrets:
+DATABASE_URL
+DERIV_CLIENT_ID
+DERIV_REDIRECT_URI
+TOKEN_ENCRYPTION_KEY
+PLATFORM_JWT_SECRET
+FRONTEND_URL
+
+Optional:
+DERIV_LEGACY_APP_ID
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+TELEGRAM_ADMIN_CHAT_ID
+
+Top-4 behavior:
+PREPARE -> APPROVE
+DEMO: four DEMO buys after approval.
+REAL: account/proposals/approval preview only; no real-money BUY transmitted.
