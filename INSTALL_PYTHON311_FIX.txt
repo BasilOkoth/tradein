@@ -1,0 +1,29 @@
+RENDER PYTHON 3.11 FIX
+
+CAUSE
+Render used Python 3.14:
+  /opt/render/project/src/.venv/bin/python3.14
+
+requirements.txt pins:
+  pydantic==2.9.2
+which requires:
+  pydantic-core==2.23.4
+
+For Python 3.14, pip did not find a compatible wheel and attempted to compile
+pydantic-core with Rust/maturin. Render then failed because Cargo tried to write
+to a read-only registry cache.
+
+FIX
+Upload these three files to the repository root:
+
+  render.yaml
+  .python-version
+  runtime.txt
+
+The service is now pinned to Python 3.11.11 in three compatible ways.
+
+Then trigger:
+  Manual Deploy -> Clear build cache & deploy
+
+Expected build log should show Python 3.11 instead of python3.14, and pydantic-core
+should install from a prebuilt wheel rather than invoking maturin/Rust.
