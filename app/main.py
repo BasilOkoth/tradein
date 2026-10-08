@@ -1,8 +1,10 @@
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .config import settings
@@ -17,6 +19,9 @@ app = FastAPI(
     title="DigitMatchStar Production OAuth Backend",
     version="3.1.0-live-top-digit",
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _normalise_origin(value: str) -> str:
@@ -82,16 +87,56 @@ async def startup():
     await engine.start()
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
+@app.get("/bot.html", include_in_schema=False)
 def root():
-    return {
-        "ok": True,
-        "service": "digitmatchstar-top4-api",
-        "backend": "DigitMatchStar Production OAuth Backend",
-        "top4": True,
-        "health": "/health",
-        "docs": "/docs",
-    }
+    """Serve the existing DigitMatchStar bot UI from the repository root."""
+    bot_path = REPO_ROOT / "bot.html"
+    if not bot_path.is_file():
+        raise HTTPException(status_code=404, detail="bot.html not found")
+    return FileResponse(bot_path, media_type="text/html")
+
+
+FRONTEND_JS = {
+    "research-suite-loader.js",
+    "passive-forward-readiness-v1.js",
+    "tail-risk-model-v1.2-combined.js",
+    "tick-rank-sync-v1.1.js",
+    "top4-basket-ui.js",
+    "trade-alignment-export.js",
+}
+
+
+@app.get("/research-suite-loader.js", include_in_schema=False)
+@app.get("/passive-forward-readiness-v1.js", include_in_schema=False)
+@app.get("/tail-risk-model-v1.2-combined.js", include_in_schema=False)
+@app.get("/tick-rank-sync-v1.1.js", include_in_schema=False)
+@app.get("/top4-basket-ui.js", include_in_schema=False)
+@app.get("/trade-alignment-export.js", include_in_schema=False)
+def frontend_js(request: Request):
+    """Serve the root-level JavaScript files referenced by bot.html."""
+    name = Path(request.url.path).name
+    if name not in FRONTEND_JS:
+        raise HTTPException(status_code=404, detail="Frontend asset not found")
+
+    asset = REPO_ROOT / name
+    if not asset.is_file():
+        raise HTTPException(status_code=404, detail=f"{name} not found")
+
+    return FileResponse(asset, media_type="application/javascript")
+
+
+@app.get("/screen-recorder-safe-v5-2.js", include_in_schema=False)
+def optional_screen_recorder_stub():
+    """
+    bot.html references this optional recorder file, but it is not currently
+    present in the repository. Return harmless JavaScript instead of a 404 so
+    the rest of the bot UI continues loading normally.
+    """
+    return Response(
+        content='console.info("[DigitMatchStar] Optional screen recorder module is not installed.");',
+        media_type="application/javascript",
+    )
 
 
 @app.get("/api/state")

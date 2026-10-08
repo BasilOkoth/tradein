@@ -1,0 +1,27 @@
+OPEN BOT AT ROOT
+
+Replace:
+  app/main.py
+
+After Render redeploys, open:
+  https://digitmatchstar-top4-api.onrender.com/
+
+The root URL now serves bot.html instead of JSON.
+
+Also served from the same backend:
+  /research-suite-loader.js
+  /passive-forward-readiness-v1.js
+  /tail-risk-model-v1.2-combined.js
+  /tick-rank-sync-v1.1.js
+  /top4-basket-ui.js
+  /trade-alignment-export.js
+
+The missing optional /screen-recorder-safe-v5-2.js reference is answered with
+a harmless JavaScript stub so it does not prevent the UI loading.
+
+Keep:
+  Start Command:
+    uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+
+  Health Check:
+    /health
