@@ -39,7 +39,9 @@
       <div class="flex flex-wrap gap-2 mt-4">
         <button onclick="configure()" class="px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 font-bold">Apply</button>
         <button onclick="openBasket()" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-black">OPEN TOP‑4 BASKET</button>
-        <a href="/api/history.csv" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 font-bold">Export CSV</a>
+        <a href="/api/history.csv" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 font-bold">Export History CSV</a>
+        <a href="/api/analytics.csv" class="px-4 py-2 rounded-lg bg-violet-700 hover:bg-violet-600 font-bold">Export Analytics CSV</a>
+        <a href="/api/analytics.json" class="px-4 py-2 rounded-lg bg-fuchsia-700 hover:bg-fuchsia-600 font-bold">Export Analytics JSON</a>
       </div>
       <div id="safetyNote" class="mt-3 text-xs text-amber-300">
         REAL mode is signal/read‑only in this teaching build. No real-money orders are sent.
@@ -82,6 +84,41 @@
       </div>
     </section>
   </div>
+
+
+  <section class="rounded-2xl border border-violet-500/20 bg-slate-900/60 p-4 mt-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-black">Top‑4 effectiveness summary</h2>
+      <div class="text-xs text-slate-500">Settled baskets only</div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Hit rate</div><div id="hitRate" class="text-xl font-black">0.00%</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Miss rate</div><div id="missRate" class="text-xl font-black">0.00%</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">ROI</div><div id="roiPct" class="text-xl font-black">0.00%</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Avg/basket</div><div id="avgBasket" class="text-xl font-black">$0.00</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Best basket</div><div id="bestBasket" class="text-xl font-black">$0.00</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Worst basket</div><div id="worstBasket" class="text-xl font-black">$0.00</div></div>
+    </div>
+
+    <div class="grid md:grid-cols-4 gap-2 mt-3">
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Rank #1 wins</div><div id="rank1Wins" class="text-lg font-black">0</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Rank #2 wins</div><div id="rank2Wins" class="text-lg font-black">0</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Rank #3 wins</div><div id="rank3Wins" class="text-lg font-black">0</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Rank #4 wins</div><div id="rank4Wins" class="text-lg font-black">0</div></div>
+    </div>
+
+    <div class="grid md:grid-cols-4 gap-2 mt-3">
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Total stake</div><div id="analyticsStake" class="text-lg font-black">$0.00</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Total return</div><div id="analyticsReturn" class="text-lg font-black">$0.00</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Net P/L</div><div id="analyticsNet" class="text-lg font-black">$0.00</div></div>
+      <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Settled baskets</div><div id="analyticsCount" class="text-lg font-black">0</div></div>
+    </div>
+
+    <div id="effectivenessNote" class="mt-3 rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs text-slate-300">
+      Waiting for settled baskets.
+    </div>
+  </section>
 
   <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 mt-4">
     <h2 class="font-black mb-3">Recent baskets</h2>
@@ -183,11 +220,58 @@ async function refreshHistory() {
     </tbody></table>`;
 }
 
+
+async function refreshAnalytics() {
+  const a = await api('/api/analytics');
+
+  document.getElementById('hitRate').textContent = Number(a.hit_rate_pct || 0).toFixed(2) + '%';
+  document.getElementById('missRate').textContent = Number(a.miss_rate_pct || 0).toFixed(2) + '%';
+
+  const roi = Number(a.roi_pct || 0);
+  const roiEl = document.getElementById('roiPct');
+  roiEl.textContent = (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%';
+  roiEl.className = 'text-xl font-black ' + (roi >= 0 ? 'text-emerald-300' : 'text-rose-300');
+
+  document.getElementById('avgBasket').textContent = money(a.average_profit_per_basket);
+  document.getElementById('bestBasket').textContent = money(a.best_basket_profit);
+  document.getElementById('worstBasket').textContent = money(a.worst_basket_profit);
+
+  document.getElementById('rank1Wins').textContent = a.rank_wins?.['1'] ?? 0;
+  document.getElementById('rank2Wins').textContent = a.rank_wins?.['2'] ?? 0;
+  document.getElementById('rank3Wins').textContent = a.rank_wins?.['3'] ?? 0;
+  document.getElementById('rank4Wins').textContent = a.rank_wins?.['4'] ?? 0;
+
+  document.getElementById('analyticsStake').textContent = money(a.total_stake);
+  document.getElementById('analyticsReturn').textContent = money(a.total_return);
+
+  const net = Number(a.net_profit || 0);
+  const netEl = document.getElementById('analyticsNet');
+  netEl.textContent = (net >= 0 ? '+' : '') + money(net);
+  netEl.className = 'text-lg font-black ' + (net >= 0 ? 'text-emerald-300' : 'text-rose-300');
+
+  document.getElementById('analyticsCount').textContent = a.settled_baskets || 0;
+
+  const n = Number(a.settled_baskets || 0);
+  const hit = Number(a.hit_rate_pct || 0);
+  const note = document.getElementById('effectivenessNote');
+
+  if (!n) {
+    note.textContent = 'Waiting for settled baskets.';
+  } else if (n < 20) {
+    note.textContent = `${n} settled basket${n === 1 ? '' : 's'} recorded. Keep collecting forward results before judging effectiveness.`;
+  } else if (roi > 0) {
+    note.textContent = `Top‑4 is profitable so far: ${hit.toFixed(2)}% hit rate and ${roi.toFixed(2)}% ROI across ${n} settled baskets. Check rank #1–#4 contribution before changing the model.`;
+  } else {
+    note.textContent = `Top‑4 is not profitable so far: ${hit.toFixed(2)}% hit rate and ${roi.toFixed(2)}% ROI across ${n} settled baskets. Check whether ranks #3/#4 add enough hits to justify their stake.`;
+  }
+}
+
 async function refresh() {
   try {
     const s = await api('/api/state');
     render(s);
     await refreshHistory();
+    await refreshAnalytics();
   } catch(_) {}
 }
 

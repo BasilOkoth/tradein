@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: digitmatchstar-top4-basket
+    runtime: python
+    plan: starter
+    region: frankfurt
+    autoDeploy: true
+
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    healthCheckPath: /api/state
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: DERIV_APP_ID
+        sync: false
+      - key: DERIV_TOKEN
+        sync: false
+      - key: DEFAULT_SYMBOL
+        value: R_10
+      - key: DEFAULT_BASKET_STAKE
+        value: "10.00"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ALLOW_REAL_EXECUTION
+        value: "false"

@@ -60,3 +60,38 @@ Create a new branch such as:
 `top4-ranked-basket`
 
 and upload the contents of this ZIP to that branch. It is self-contained and does not need to overwrite your existing single-target branch.
+
+
+## Analytics and effectiveness export
+
+The dashboard includes:
+
+- Export History CSV
+- Export Analytics CSV
+- Export Analytics JSON
+- Top‑4 basket hit rate and miss rate
+- Rank #1, #2, #3 and #4 win counts
+- Total stake, total return, net P/L and ROI
+- Average profit per basket
+- Best and worst basket
+- Winning rank for every basket
+- Cumulative P/L per basket
+- Source epoch, Top‑4 digits, scores and outcome digit
+
+This lets you answer whether Top‑4 is actually effective, which ranks contribute most,
+whether ranks #3/#4 are worth funding, and whether changes improve forward results.
+
+
+## Deploy on Render
+
+Use **New → Blueprint** in Render and select this branch. `render.yaml` is included.
+
+Secrets to enter:
+- DERIV_APP_ID
+- DERIV_TOKEN
+- TELEGRAM_BOT_TOKEN (optional)
+- TELEGRAM_CHAT_ID (optional)
+
+The start command is:
+
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT`

@@ -1,8 +1,25 @@
 {
   "branch_name_suggestion": "top4-ranked-basket",
-  "mode_demo": "actual DEMO Deriv proposals + buys",
-  "mode_real": "signal/read-only; no real-money buys",
-  "telegram": true,
-  "basket_legs": 4,
-  "default_total_stake": 10.0
+  "render_ready": true,
+  "analytics_v2": true,
+  "exports": [
+    "history.csv",
+    "analytics.csv",
+    "analytics.json"
+  ],
+  "metrics": [
+    "hit_rate",
+    "miss_rate",
+    "rank_1_to_4_wins",
+    "total_stake",
+    "total_return",
+    "net_profit",
+    "roi",
+    "average_profit_per_basket",
+    "best_basket",
+    "worst_basket",
+    "cumulative_profit"
+  ],
+  "demo_execution": true,
+  "real_mode": "signal/read-only"
 }
