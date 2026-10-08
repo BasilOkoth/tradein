@@ -1,9 +1,12 @@
 /*
- * DigitMatchStar Top-4 Hybrid UI v3 (Real Trade Execution & Automation Enabled)
+ * DigitMatchStar Top-4 Immediate DEMO Basket UI v2
  *
- * - Allows switching between DEMO and REAL trade execution modes.
- * - Supports manual single-click execution.
- * - Adds Automated Trading loop mode to auto-trigger basket orders on fresh ranking snapshots.
+ * - PREPARE removed.
+ * - APPROVE removed.
+ * - One click: EXECUTE TOP-4 NOW.
+ * - The server freezes the freshest Top-4 ranking at request time.
+ * - DEMO executes immediately.
+ * - REAL is preview-only; no real-money BUY is transmitted.
  */
 (() => {
   'use strict';
@@ -13,10 +16,7 @@
   const state = {
     latest: null,
     busy: false,
-    pollTimer: null,
-    autoTimer: null,
-    autoTradingEnabled: false,
-    lastAutoEpoch: 0
+    pollTimer: null
   };
 
   const money = (n) => `$${Number(n || 0).toFixed(2)}`;
@@ -59,15 +59,15 @@
       <div class="flex items-center justify-between gap-3 mb-3">
         <div>
           <div class="text-[10px] uppercase tracking-wider text-fuchsia-400 font-black">
-            TOP-4 BASKET EXECUTION ENGINE
+            TOP-4 IMMEDIATE BASKET
           </div>
           <div id="top4-basket-status" class="text-sm font-black text-white">
             Waiting for server ranking…
           </div>
         </div>
         <div class="text-right">
-          <div class="text-[9px] uppercase text-slate-500 font-bold">Automation</div>
-          <div id="top4-auto-badge" class="text-[11px] font-black text-slate-400">AUTOMATION: OFF</div>
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Execution</div>
+          <div class="text-[11px] font-black text-emerald-300">ONE CLICK · FRESH RANKING</div>
         </div>
       </div>
 
@@ -85,13 +85,10 @@
           <div id="top4-per-leg" class="mt-1 text-lg font-black text-white">$2.50</div>
         </div>
 
-        <label class="rounded-lg bg-slate-900/70 p-2">
-          <div class="text-[9px] uppercase text-slate-500 font-bold">Execution Mode</div>
-          <select id="top4-exec-mode-select" class="mt-1 w-full rounded bg-slate-950 border border-slate-700 px-1 py-1 text-white font-black">
-            <option value="demo">DEMO</option>
-            <option value="real">REAL (LIVE MONEY)</option>
-          </select>
-        </label>
+        <div class="rounded-lg bg-slate-900/70 p-2">
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Mode</div>
+          <div id="top4-mode" class="mt-1 text-lg font-black text-white">—</div>
+        </div>
 
         <div class="rounded-lg bg-slate-900/70 p-2">
           <div class="text-[9px] uppercase text-slate-500 font-bold">Last basket P/L</div>
@@ -99,17 +96,10 @@
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
-        <button id="top4-execute-btn"
-          class="rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 px-3 py-3 font-black text-white text-sm">
-          ⚡ EXECUTE TOP-4 NOW
-        </button>
-
-        <button id="top4-toggle-auto-btn"
-          class="rounded-lg bg-fuchsia-800 hover:bg-fuchsia-700 px-3 py-3 font-black text-white text-sm">
-          🤖 START AUTO-TRADER
-        </button>
-      </div>
+      <button id="top4-execute-btn"
+        class="w-full rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-800 disabled:text-slate-500 px-3 py-3 font-black text-white text-sm">
+        ⚡ EXECUTE TOP-4 NOW
+      </button>
 
       <div class="grid grid-cols-2 gap-2 mt-2">
         <button id="top4-refresh-btn"
@@ -123,8 +113,8 @@
       </div>
 
       <div id="top4-note" class="mt-2 text-[10px] text-slate-400">
-        DEMO: Freezes current ranking & executes virtual contracts.
-        REAL: Transmits real-money orders directly to Deriv API.
+        DEMO: one click freezes the current server Top-4 and submits immediately.
+        REAL: preview only; no real-money BUY is sent.
       </div>
     `;
 
@@ -140,10 +130,7 @@
     });
 
     panel.querySelector('#top4-execute-btn')
-      .addEventListener('click', () => executeNow());
-
-    panel.querySelector('#top4-toggle-auto-btn')
-      .addEventListener('click', toggleAutoTrader);
+      .addEventListener('click', executeNow);
 
     panel.querySelector('#top4-refresh-btn')
       .addEventListener('click', refreshStatus);
@@ -171,8 +158,9 @@
 
     const st = sessionState();
     const top4 = currentTop4();
-    const modeSelect = document.getElementById('top4-exec-mode-select');
-    const selectedMode = (modeSelect?.value || 'demo').toUpperCase();
+    const mode = String(st?.account_mode || '—').toUpperCase();
+
+    document.getElementById('top4-mode').textContent = mode;
 
     document.getElementById('top4-ranks').innerHTML = top4.map((row, idx) => `
       <div class="rounded-lg border ${
@@ -186,33 +174,23 @@
 
     const status = document.getElementById('top4-basket-status');
     const btn = document.getElementById('top4-execute-btn');
-    const autoBtn = document.getElementById('top4-toggle-auto-btn');
-    const autoBadge = document.getElementById('top4-auto-badge');
 
     btn.disabled = state.busy || top4.length < 4 || !sessionId();
 
-    if (state.autoTradingEnabled) {
-      autoBadge.textContent = 'AUTOMATION: ACTIVE 🟢';
-      autoBadge.className = 'text-[11px] font-black text-emerald-400 animate-pulse';
-      autoBtn.textContent = '🛑 STOP AUTO-TRADER';
-      autoBtn.className = 'rounded-lg bg-rose-800 hover:bg-rose-700 px-3 py-3 font-black text-white text-sm';
-    } else {
-      autoBadge.textContent = 'AUTOMATION: OFF';
-      autoBadge.className = 'text-[11px] font-black text-slate-400';
-      autoBtn.textContent = '🤖 START AUTO-TRADER';
-      autoBtn.className = 'rounded-lg bg-fuchsia-800 hover:bg-fuchsia-700 px-3 py-3 font-black text-white text-sm';
-    }
-
     if (state.busy) {
-      status.textContent = `Executing [${selectedMode}] Top-4…`;
+      status.textContent = 'Executing fresh Top-4…';
       btn.textContent = '⚡ EXECUTING…';
     } else {
-      btn.textContent = `⚡ EXECUTE TOP-4 NOW [${selectedMode}]`;
+      btn.textContent =
+        mode === 'REAL'
+          ? '👁 REFRESH REAL TOP-4 PREVIEW'
+          : '⚡ EXECUTE TOP-4 NOW';
 
       if (top4.length < 4) {
         status.textContent = 'Waiting for fresh Top-4 ranking…';
       } else {
-        status.textContent = `Ready · ${top4.map(x => x.digit).join(' · ')}`;
+        status.textContent =
+          `Ready · ${top4.map(x => x.digit).join(' · ')}`;
       }
     }
 
@@ -231,23 +209,17 @@
     }
   }
 
-  async function executeNow(autoTriggered = false) {
+  async function executeNow() {
     const sid = sessionId();
     if (!sid || state.busy) return;
 
     const stake = Number(
       document.getElementById('top4-basket-stake')?.value || 0
     );
-    const mode = document.getElementById('top4-exec-mode-select')?.value || 'demo';
 
     if (!Number.isFinite(stake) || stake <= 0) {
-      if (!autoTriggered) alert('Enter a valid basket stake.');
+      alert('Enter a valid basket stake.');
       return;
-    }
-
-    if (mode === 'real' && !autoTriggered) {
-      const confirmReal = confirm('⚠️ REAL MONEY TRADING: Are you sure you want to execute live Deriv orders?');
-      if (!confirmReal) return;
     }
 
     try {
@@ -258,63 +230,30 @@
         `/sessions/${sid}/top4/execute`,
         {
           method: 'POST',
-          body: {
-            basket_stake: stake,
-            mode: mode
-          }
+          body: { basket_stake: stake }
         }
       );
 
       state.latest = result;
-      const status = document.getElementById('top4-basket-status');
-      const opened = Number(result.opened_count || 0);
 
-      status.textContent = `[${mode.toUpperCase()}] Submitted · ${opened}/4 contracts opened`;
+      const status = document.getElementById('top4-basket-status');
+
+      if (String(result.account_mode).toUpperCase() === 'REAL') {
+        status.textContent = 'REAL preview refreshed · no BUY sent';
+      } else {
+        const opened = Number(result.opened_count || 0);
+        status.textContent =
+          `Submitted immediately · ${opened}/4 contracts opened`;
+      }
 
     } catch (e) {
-      if (!autoTriggered) alert(e.message);
+      alert(e.message);
       const status = document.getElementById('top4-basket-status');
       if (status) status.textContent = `Execution error · ${e.message}`;
     } finally {
       state.busy = false;
       render();
       setTimeout(refreshStatus, 500);
-    }
-  }
-
-  function toggleAutoTrader() {
-    state.autoTradingEnabled = !state.autoTradingEnabled;
-    if (state.autoTradingEnabled) {
-      const mode = document.getElementById('top4-exec-mode-select')?.value || 'demo';
-      if (mode === 'real') {
-        const confirmAutoReal = confirm('⚠️ AUTOMATED REAL TRADING: Auto-trader will execute LIVE ORDERS automatically. Proceed?');
-        if (!confirmAutoReal) {
-          state.autoTradingEnabled = false;
-          render();
-          return;
-        }
-      }
-    }
-    render();
-  }
-
-  function checkAutomationLoop() {
-    if (!state.autoTradingEnabled || state.busy) return;
-
-    const st = sessionState();
-    const currentEpoch = Number(st?.digit_score?.last_epoch || 0);
-    const latestStatus = state.latest?.status;
-
-    // Trigger auto execution if server generated a new tick/score epoch and last basket is settled or non-existent
-    if (
-      currentEpoch > state.lastAutoEpoch &&
-      (!latestStatus || latestStatus === 'SETTLED')
-    ) {
-      const top4 = currentTop4();
-      if (top4.length === 4) {
-        state.lastAutoEpoch = currentEpoch;
-        executeNow(true);
-      }
     }
   }
 
@@ -365,10 +304,7 @@
 
     state.pollTimer = setInterval(() => {
       render();
-      if (!state.busy) {
-        refreshStatus();
-        checkAutomationLoop();
-      }
+      if (!state.busy) refreshStatus();
     }, 1000);
   }
 
@@ -385,7 +321,6 @@
   window.DMSTop4BasketUI = {
     state,
     refreshStatus,
-    executeNow,
-    toggleAutoTrader
+    executeNow
   };
 })();

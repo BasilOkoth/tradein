@@ -1,23 +1,13 @@
-from enum import Enum
 from fastapi import Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .main import app
 from .security import current_user_id
 from .top4_basket import top4_baskets
 
 
-class ExecutionMode(str, Enum):
-    DEMO = "demo"
-    REAL = "real"
-
-
 class Top4Execute(BaseModel):
-    basket_stake: float = Field(default=10.0, gt=0)
-    mode: ExecutionMode = Field(
-        default=ExecutionMode.DEMO,
-        description="Execution mode: 'demo' for simulated pipeline, 'real' for live Deriv trades."
-    )
+    basket_stake: float = 10.0
 
 
 @app.get("/sessions/{sid}/top4/status")
@@ -38,20 +28,19 @@ async def top4_execute(
     user_id: str = Depends(current_user_id),
 ):
     """
-    One-step Top-4 action supporting both DEMO and REAL modes.
+    One-step Top-4 action.
 
     DEMO:
-      freezes the fresh Top-4 ranking and simulates the four proposal->buy pipelines.
+      freezes the fresh Top-4 ranking and immediately starts four
+      proposal->buy pipelines.
 
     REAL:
-      freezes the fresh Top-4 ranking and executes live Deriv WebSocket proposal
-      and buy requests for real money trades.
+      returns a fresh preview only. No real-money BUY is transmitted.
     """
     return await top4_baskets.execute_now(
         user_id=user_id,
         sid=sid,
         basket_stake=body.basket_stake,
-        mode=body.mode.value,
     )
 
 
@@ -73,7 +62,6 @@ def legacy_api_state():
         "service": "digitmatchstar-top4-api",
         "backend": "DigitMatchStar Production OAuth Backend",
         "top4": True,
-        "top4_mode": "HYBRID_DEMO_AND_REAL",
-        "supported_modes": ["demo", "real"],
+        "top4_mode": "IMMEDIATE_DEMO",
         "health_endpoint": "/health",
     }

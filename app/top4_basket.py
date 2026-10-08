@@ -15,17 +15,18 @@ from .engine import engine
 
 class Top4BasketService:
     """
-    Immediate Top-4 DEMO and REAL basket execution.
+    Immediate Top-4 DEMO basket execution.
 
     Design:
     - One fresh server-side DigitScore snapshot freezes ranks #1-#4.
     - There is NO PREPARE state and NO APPROVE state.
-    - On DEMO or REAL, one request starts four proposal->buy pipelines immediately.
-    - Each leg requests its fresh proposal and buys it immediately according to the specified mode.
+    - On DEMO, one request starts four proposal->buy pipelines immediately.
+    - Each leg requests its fresh proposal and buys it immediately.
+    - REAL accounts remain non-executing: ranking/preview only, no BUY sent.
     - Settlement happens in the background and never opens another basket.
     """
 
-    VERSION = "TOP4_IMMEDIATE_HYBRID_V2"
+    VERSION = "TOP4_IMMEDIATE_DEMO_V2"
 
     def __init__(self):
         self.live = {}              # basket_id -> runtime dict
@@ -108,17 +109,12 @@ class Top4BasketService:
         except Exception:
             pass
 
-    async def execute_now(self, *, user_id, sid, basket_stake, mode="demo"):
+    async def execute_now(self, *, user_id, sid, basket_stake):
         """
-        Freeze the current Top-4 ranking and execute immediately.
-        Supports both 'demo' and 'real' execution modes.
+        Freeze the current Top-4 ranking and execute immediately on DEMO.
+
+        REAL mode deliberately does not transmit BUY instructions.
         """
-        exec_mode = str(mode).lower()
-        if exec_mode not in {"demo", "real"}:
-            raise HTTPException(400, f"Unsupported execution mode: {mode}")
-
-        is_demo = exec_mode == "demo"
-
         async with self._locks[int(sid)]:
             db = SessionLocal()
 
@@ -144,7 +140,7 @@ class Top4BasketService:
                 )
 
                 basket_id = uuid.uuid4().hex
-                account_mode = str(s.account_mode or "").upper()
+                mode = str(s.account_mode or "").upper()
 
                 frozen_legs = [
                     {
@@ -163,8 +159,7 @@ class Top4BasketService:
                     "session_id": s.id,
                     "user_id": s.user_id,
                     "account_id": s.account_id,
-                    "account_mode": account_mode,
-                    "execution_mode": exec_mode.upper(),
+                    "account_mode": mode,
                     "symbol": s.symbol,
                     "currency": currency,
                     "basket_stake": round(sum(stakes), 2),
@@ -178,13 +173,27 @@ class Top4BasketService:
                     "triggered_at": datetime.utcnow().isoformat(),
                 }
 
+                # REAL remains read-only / non-executing.
+                if mode == "REAL":
+                    base["status"] = "REAL_PREVIEW_ONLY_NOT_SENT"
+                    base["real_execution_sent"] = False
+                    self.live[basket_id] = base
+
+                    await self._telegram(
+                        "DigitMatchStar TOP-4 REAL preview\n"
+                        f"Basket: {basket_id[:10]}\n"
+                        f"Digits: {', '.join(str(x['digit']) for x in frozen_legs)}\n"
+                        "No real-money order was transmitted."
+                    )
+                    return base
+
                 client = await engine._client(
                     s.user_id,
                     s.account_id,
                 )
 
                 async def proposal_then_buy(leg):
-                    # Request proposal and execute buy order according to mode
+                    # Fresh proposal and immediate DEMO buy for this frozen digit.
                     proposal = await client.proposal_digitmatch(
                         symbol=s.symbol,
                         digit=int(leg["digit"]),
@@ -208,7 +217,7 @@ class Top4BasketService:
                     buy_result = await client.buy(
                         proposal_id,
                         ask_price,
-                        demo=is_demo,
+                        demo=True,
                     )
 
                     return {
@@ -221,7 +230,7 @@ class Top4BasketService:
                         "deriv_buy": buy_result,
                     }
 
-                # All four proposal->buy pipelines are launched concurrently
+                # All four proposal->buy pipelines are launched together.
                 results = await asyncio.gather(
                     *[
                         proposal_then_buy(leg)
@@ -289,7 +298,6 @@ class Top4BasketService:
                                 "kind": "TOP4_BASKET_LEG",
                                 "version": self.VERSION,
                                 "basket_id": basket_id,
-                                "execution_mode": exec_mode.upper(),
                                 "rank": int(item["rank"]),
                                 "source_epoch": source_epoch,
                                 "score": float(item["score"]),
@@ -316,14 +324,14 @@ class Top4BasketService:
                 )
                 runtime["execution_failures"] = failures
                 runtime["opened_count"] = len(opened)
-                runtime["real_execution_sent"] = not is_demo
+                runtime["real_execution_sent"] = False
                 runtime["opened_at"] = datetime.utcnow().isoformat()
 
                 self.live[basket_id] = runtime
 
                 if opened:
                     task = asyncio.create_task(
-                        self._settle_basket(
+                        self._settle_demo_basket(
                             sid=s.id,
                             user_id=s.user_id,
                             account_id=s.account_id,
@@ -333,7 +341,7 @@ class Top4BasketService:
                     self._settlement_tasks[basket_id] = task
 
                 await self._telegram(
-                    f"DigitMatchStar TOP-4 [{exec_mode.upper()}] immediate execution\n"
+                    "DigitMatchStar TOP-4 DEMO immediate execution\n"
                     f"Basket: {basket_id[:10]}\n"
                     f"Digits: {', '.join(str(x['digit']) for x in frozen_legs)}\n"
                     f"Opened: {len(opened)}/4\n"
@@ -343,7 +351,7 @@ class Top4BasketService:
                 if not opened:
                     raise HTTPException(
                         502,
-                        f"No {exec_mode.upper()} Top-4 contracts opened. "
+                        "No DEMO Top-4 contracts opened. "
                         + " | ".join(failures[:4]),
                     )
 
@@ -352,7 +360,7 @@ class Top4BasketService:
             finally:
                 db.close()
 
-    async def _settle_basket(
+    async def _settle_demo_basket(
         self,
         *,
         sid,
@@ -473,9 +481,8 @@ class Top4BasketService:
             if leg.get("status") == "WIN"
         ]
 
-        exec_mode = runtime.get("execution_mode", "DEMO")
         await self._telegram(
-            f"DigitMatchStar TOP-4 [{exec_mode}] basket SETTLED\n"
+            "DigitMatchStar TOP-4 DEMO basket SETTLED\n"
             f"Basket: {basket_id[:10]}\n"
             f"Winning rank(s): {runtime['winning_ranks'] or 'none'}\n"
             f"Net P/L: {runtime['net_profit']:+.2f} {runtime['currency']}\n"
@@ -544,7 +551,6 @@ class Top4BasketService:
                     basket_id,
                     {
                         "basket_id": basket_id,
-                        "execution_mode": raw.get("execution_mode", "DEMO"),
                         "source_epoch": raw.get("source_epoch"),
                         "triggered_at": raw.get("triggered_at"),
                         "legs": [],
