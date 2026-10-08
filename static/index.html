@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DigitMatchStar · Top‑4 Basket</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+<div class="max-w-6xl mx-auto p-4 md:p-8">
+  <div class="flex items-start justify-between gap-4 mb-6">
+    <div>
+      <div class="text-xs uppercase tracking-[0.3em] text-cyan-400 font-black">DigitMatchStar</div>
+      <h1 class="text-3xl font-black">Top‑4 Ranked Digit Basket</h1>
+      <p class="text-slate-400 mt-1">Four ranked Digit Match legs · same canonical basket epoch · DEMO execution + classroom mode.</p>
+    </div>
+    <div id="modeBadge" class="px-3 py-2 rounded-xl bg-emerald-950 border border-emerald-500/30 font-black text-emerald-300">DEMO</div>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-4 mb-4">
+    <section class="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div class="grid sm:grid-cols-3 gap-3">
+        <label class="block">
+          <span class="text-xs text-slate-400">Mode</span>
+          <select id="mode" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2">
+            <option>DEMO</option>
+            <option>REAL</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-xs text-slate-400">Symbol</span>
+          <input id="symbol" value="R_10" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2"/>
+        </label>
+        <label class="block">
+          <span class="text-xs text-slate-400">Total basket stake</span>
+          <input id="stake" type="number" step="0.01" value="10" class="w-full mt-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2"/>
+        </label>
+      </div>
+      <div class="flex flex-wrap gap-2 mt-4">
+        <button onclick="configure()" class="px-4 py-2 rounded-lg bg-sky-700 hover:bg-sky-600 font-bold">Apply</button>
+        <button onclick="openBasket()" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-black">OPEN TOP‑4 BASKET</button>
+        <a href="/api/history.csv" class="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 font-bold">Export CSV</a>
+      </div>
+      <div id="safetyNote" class="mt-3 text-xs text-amber-300">
+        REAL mode is signal/read‑only in this teaching build. No real-money orders are sent.
+      </div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <div class="text-xs uppercase text-slate-400">Canonical tick</div>
+      <div id="quote" class="text-3xl font-black mt-1">—</div>
+      <div id="digit" class="text-lg font-bold text-cyan-300">Digit —</div>
+      <div id="epoch" class="text-xs text-slate-500 mt-1">Epoch —</div>
+    </section>
+  </div>
+
+  <section class="rounded-2xl border border-cyan-500/20 bg-slate-900/60 p-4 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-black">Top 4 ranked digits</h2>
+      <div id="margin" class="text-xs text-slate-400">#1/#2 margin —</div>
+    </div>
+    <div id="top4" class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>
+  </section>
+
+  <div class="grid lg:grid-cols-2 gap-4">
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <h2 class="font-black mb-3">Open basket</h2>
+      <div id="openBasket" class="text-sm text-slate-400">No basket open.</div>
+    </section>
+
+    <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+      <h2 class="font-black mb-3">Session economics</h2>
+      <div class="grid grid-cols-3 gap-2">
+        <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Baskets</div><div id="basketCount" class="text-xl font-black">0</div></div>
+        <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">Staked</div><div id="totalStaked" class="text-xl font-black">$0.00</div></div>
+        <div class="rounded-lg bg-slate-950 p-3"><div class="text-xs text-slate-500">P/L</div><div id="totalProfit" class="text-xl font-black">$0.00</div></div>
+      </div>
+      <div class="mt-3 rounded-lg border border-violet-500/20 bg-violet-950/20 p-3 text-xs">
+        <b>Teaching example:</b> $10 basket ÷ 4 = $2.50 per digit. If the winning
+        leg returns 7.929× stake, gross return is $19.82 and basket net is about +$9.82.
+        Actual DEMO accounting uses Deriv's proposal payout.
+      </div>
+    </section>
+  </div>
+
+  <section class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 mt-4">
+    <h2 class="font-black mb-3">Recent baskets</h2>
+    <div id="history" class="overflow-x-auto text-xs"></div>
+  </section>
+</div>
+
+<script>
+const money = n => '$' + Number(n||0).toFixed(2);
+
+function rankCard(row, idx, stake) {
+  return `<div class="rounded-xl border border-cyan-500/20 bg-slate-950 p-3">
+    <div class="text-xs text-cyan-400 font-black">RANK #${idx+1}</div>
+    <div class="text-4xl font-black">${row.digit}</div>
+    <div class="text-sm">Score ${Number(row.score).toFixed(3)}</div>
+    <div class="text-xs text-slate-500 mt-1">Leg ${money(stake)}</div>
+  </div>`;
+}
+
+async function api(path, options={}) {
+  const r = await fetch(path, {
+    headers:{'Content-Type':'application/json'},
+    ...options
+  });
+  const data = await r.json().catch(()=>null);
+  if(!r.ok) throw new Error(data?.detail || 'Request failed');
+  return data;
+}
+
+async function configure() {
+  try {
+    const s = await api('/api/configure', {
+      method:'POST',
+      body: JSON.stringify({
+        mode: document.getElementById('mode').value,
+        symbol: document.getElementById('symbol').value,
+        basket_stake: Number(document.getElementById('stake').value)
+      })
+    });
+    render(s);
+  } catch(e) { alert(e.message); }
+}
+
+async function openBasket() {
+  try {
+    const b = await api('/api/basket/open', {method:'POST'});
+    await refresh();
+    if (b.status === 'REAL_SIGNAL_ONLY') {
+      alert('REAL teaching signal created. No real-money orders were sent.');
+    }
+  } catch(e) { alert(e.message); }
+}
+
+function render(s) {
+  document.getElementById('modeBadge').textContent = s.mode;
+  document.getElementById('quote').textContent = s.latest_tick?.quote ?? '—';
+  document.getElementById('digit').textContent = 'Digit ' + (s.latest_tick?.digit ?? '—');
+  document.getElementById('epoch').textContent = 'Epoch ' + (s.latest_tick?.epoch ?? '—');
+  document.getElementById('margin').textContent = '#1/#2 margin ' + Number(s.score?.top_margin||0).toFixed(3);
+
+  const per = Number(s.basket_stake||0)/4;
+  document.getElementById('top4').innerHTML = (s.score?.top4 || []).map((x,i)=>rankCard(x,i,per)).join('');
+
+  const b = s.open_basket;
+  document.getElementById('openBasket').innerHTML = b ? `
+    <div class="grid grid-cols-2 gap-2">
+      <div>Basket <b>#${b.basket_no}</b></div><div>Status <b>${b.status}</b></div>
+      <div>Source epoch <b>${b.source_epoch}</b></div><div>Stake <b>${money(b.total_stake)}</b></div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+      ${b.legs.map(x=>`<div class="rounded bg-slate-950 p-2">#${x.rank} digit <b>${x.digit}</b><br>${money(x.stake)} · ${x.result}</div>`).join('')}
+    </div>` : 'No basket open.';
+
+  document.getElementById('basketCount').textContent = s.basket_count;
+  document.getElementById('totalStaked').textContent = money(s.total_staked);
+  const pl = document.getElementById('totalProfit');
+  pl.textContent = (Number(s.total_profit)>=0?'+':'') + money(s.total_profit);
+  pl.className = 'text-xl font-black ' + (Number(s.total_profit)>=0?'text-emerald-300':'text-rose-300');
+}
+
+async function refreshHistory() {
+  const h = await api('/api/history');
+  if (!h.length) {
+    document.getElementById('history').innerHTML = '<div class="text-slate-500">No settled baskets yet.</div>';
+    return;
+  }
+  document.getElementById('history').innerHTML = `<table class="w-full">
+    <thead><tr class="text-left text-slate-500">
+      <th class="p-2">#</th><th>Top 4</th><th>Outcome</th><th>Stake</th><th>Return</th><th>Net</th>
+    </tr></thead><tbody>
+    ${h.slice(-20).reverse().map(b=>`<tr class="border-t border-slate-800">
+      <td class="p-2">${b.basket_no}</td>
+      <td>${b.ranked.map(x=>x.digit).join(', ')}</td>
+      <td>${b.outcome_digit ?? '—'}</td>
+      <td>${money(b.total_stake)}</td>
+      <td>${money(b.gross_return)}</td>
+      <td class="${Number(b.net_profit)>=0?'text-emerald-300':'text-rose-300'}">${Number(b.net_profit)>=0?'+':''}${money(b.net_profit)}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function refresh() {
+  try {
+    const s = await api('/api/state');
+    render(s);
+    await refreshHistory();
+  } catch(_) {}
+}
+
+setInterval(refresh, 750);
+refresh();
+</script>
+</body>
+</html>

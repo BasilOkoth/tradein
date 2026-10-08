@@ -1,0 +1,8 @@
+{
+  "branch_name_suggestion": "top4-ranked-basket",
+  "mode_demo": "actual DEMO Deriv proposals + buys",
+  "mode_real": "signal/read-only; no real-money buys",
+  "telegram": true,
+  "basket_legs": 4,
+  "default_total_stake": 10.0
+}
