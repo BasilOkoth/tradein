@@ -1,19 +1,23 @@
+from enum import Enum
 from fastapi import Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-# Import the exact existing application. This preserves every current route,
-# OAuth flow, account/session behavior, startup hook and CORS configuration.
 from .main import app
 from .security import current_user_id
 from .top4_basket import top4_baskets
 
 
-class Top4Prepare(BaseModel):
-    basket_stake: float = 10.0
+class ExecutionMode(str, Enum):
+    DEMO = "demo"
+    REAL = "real"
 
 
-class Top4Approve(BaseModel):
-    basket_id: str
+class Top4Execute(BaseModel):
+    basket_stake: float = Field(default=10.0, gt=0)
+    mode: ExecutionMode = Field(
+        default=ExecutionMode.DEMO,
+        description="Execution mode: 'demo' for simulated pipeline, 'real' for live Deriv trades."
+    )
 
 
 @app.get("/sessions/{sid}/top4/status")
@@ -27,40 +31,27 @@ def top4_status(
     )
 
 
-@app.post("/sessions/{sid}/top4/prepare")
-async def top4_prepare(
+@app.post("/sessions/{sid}/top4/execute")
+async def top4_execute(
     sid: int,
-    body: Top4Prepare,
+    body: Top4Execute,
     user_id: str = Depends(current_user_id),
 ):
-    return await top4_baskets.prepare(
+    """
+    One-step Top-4 action supporting both DEMO and REAL modes.
+
+    DEMO:
+      freezes the fresh Top-4 ranking and simulates the four proposal->buy pipelines.
+
+    REAL:
+      freezes the fresh Top-4 ranking and executes live Deriv WebSocket proposal
+      and buy requests for real money trades.
+    """
+    return await top4_baskets.execute_now(
         user_id=user_id,
         sid=sid,
         basket_stake=body.basket_stake,
-    )
-
-
-@app.post("/sessions/{sid}/top4/approve")
-async def top4_approve(
-    sid: int,
-    body: Top4Approve,
-    user_id: str = Depends(current_user_id),
-):
-    return await top4_baskets.approve(
-        user_id=user_id,
-        sid=sid,
-        basket_id=body.basket_id,
-    )
-
-
-@app.post("/sessions/{sid}/top4/reject")
-async def top4_reject(
-    sid: int,
-    user_id: str = Depends(current_user_id),
-):
-    return await top4_baskets.reject(
-        user_id=user_id,
-        sid=sid,
+        mode=body.mode.value,
     )
 
 
@@ -75,23 +66,14 @@ def top4_export(
     )
 
 
-# ---------------------------------------------------------------------------
-# RENDER / LEGACY HEALTH COMPATIBILITY
-# ---------------------------------------------------------------------------
-
 @app.get("/api/state")
 def legacy_api_state():
-    """
-    Backward-compatible health endpoint.
-
-    The previous simplified Top-4 service used /api/state as its Render health
-    check. Keeping this endpoint prevents an existing Render service setting
-    from marking the new full backend unhealthy during deployment.
-    """
     return {
         "ok": True,
         "service": "digitmatchstar-top4-api",
         "backend": "DigitMatchStar Production OAuth Backend",
         "top4": True,
+        "top4_mode": "HYBRID_DEMO_AND_REAL",
+        "supported_modes": ["demo", "real"],
         "health_endpoint": "/health",
     }

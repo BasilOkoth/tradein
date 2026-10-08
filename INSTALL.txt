@@ -1,35 +1,34 @@
-DIGITMATCHSTAR TOP-4 UI FIX
+TOP-4 IMMEDIATE DEMO EXECUTION V2
 
-Replace:
-  app/main.py
+Replace these three files in the repository:
+  app/top4_basket.py
+  app/top4_main.py
+  top4-basket-ui.js
 
-WHY THE BOT LOOPED
-The previous change served bot.html at '/'.
-But bot.html has an authentication guard that redirects an unauthenticated
-browser to '/'. That made '/' reload bot.html forever.
+What changed:
+- PREPARE removed.
+- APPROVE removed.
+- REJECT removed.
+- One button: EXECUTE TOP-4 NOW.
+- Server freezes a fresh Top-4 ranking at the instant the request arrives.
+- Four proposal->buy pipelines launch immediately.
+- DEMO only: orders are submitted.
+- REAL: fresh preview only; no real-money BUY is transmitted.
+- Settlement remains background-only.
+- Export remains available.
 
-THIS FIX
-1. '/' serves index.html (secure Deriv OAuth login page).
-2. '/bot.html' and '/bot' serve the full bot after login.
-3. The old hard-coded https://digitmatchstar-api.onrender.com references are
-   rewritten at response time to this Top-4 service's own URL.
-4. Secure SERVER mode no longer tries to open the obsolete browser raw-token
-   authenticated WebSocket during startup.
-5. Public Deriv market data remains browser-visible.
-6. A scroll safety override restores vertical scrolling.
-7. /health and /api/state remain backend health endpoints.
+Render settings do not change:
+  Start Command:
+    uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
 
-KEEP RENDER:
-Start Command:
-  uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
-Health Check:
-  /health
+  Health Check Path:
+    /health
 
-IMPORTANT ENVIRONMENT:
-FRONTEND_URL should point to this service:
-  https://digitmatchstar-top4-api.onrender.com
-
-DERIV_REDIRECT_URI should be:
-  https://digitmatchstar-top4-api.onrender.com/auth/deriv/callback
-
-The same callback URL must be registered in the Deriv OAuth application.
+Recommended test:
+1. Connect DEMO.
+2. Create/select a server session.
+3. Wait until four ranked digits are visible.
+4. Set basket stake.
+5. Click EXECUTE TOP-4 NOW once.
+6. Confirm status says 4/4 contracts opened.
+7. Export JSON after settlement and inspect source_epoch and contract IDs.
