@@ -12,14 +12,18 @@ MessageCallback = Callable[[dict], Awaitable[None]]
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client for DEMO execution + read-only subscriptions.
+    Event-driven Deriv WebSocket client.
 
-    Safety:
-    - `buy(..., demo=True)` must be explicitly marked DEMO.
-    - REAL purchase automation is not supported by this client.
+    Execution safety:
+    - `buy(..., demo=True)` is always permitted (DEMO account).
+    - `buy(..., demo=False)` is permitted ONLY when the client instance was
+      constructed with `allow_real=True`. This is decided at connect time by
+      the caller (engine), based on the Deriv account's own account_type.
+    - BUY is never auto-retried on timeout. Proposal requests may be retried
+      because they are read-only.
     """
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, *, allow_real: bool = False):
         self.url = url
         self.ws = None
         self.req_id = 0
@@ -30,6 +34,10 @@ class DerivWS:
         self._send_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
+
+        # Defense-in-depth flag: set once by the engine when the Deriv account
+        # backing this socket is a REAL account. DEMO clients never set it.
+        self._allow_real = bool(allow_real)
 
         # Proposal flow control.
         # Every proposal request on this account/socket is serialized here.
@@ -44,6 +52,11 @@ class DerivWS:
         # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
+
+    @property
+    def supports_real_buys(self) -> bool:
+        """Read-only diagnostic for logs/UI."""
+        return self._allow_real
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -312,10 +325,18 @@ class DerivWS:
                     raise
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
-        if not demo:
+        # Two independent permissions are required for a REAL buy:
+        #   1) The caller must request it explicitly with demo=False.
+        #   2) This specific client instance must have been constructed with
+        #      allow_real=True — which the engine only does for sessions whose
+        #      Deriv account is itself a REAL account AND the session has
+        #      real_auto_trade enabled.
+        #
+        # DEMO buys are always permitted regardless of allow_real.
+        if not demo and not self._allow_real:
             raise RuntimeError(
-                "Automated REAL-money purchase is disabled. "
-                "This client only permits DEMO execution."
+                "REAL-money buy rejected: DerivWS client was not "
+                "constructed with allow_real=True."
             )
 
         return await self.request(
