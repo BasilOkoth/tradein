@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
 from .config import settings
@@ -87,14 +87,101 @@ async def startup():
     await engine.start()
 
 
+def _origin_from_request(request: Request) -> str:
+    return str(request.base_url).rstrip("/")
+
+
 @app.get("/", include_in_schema=False)
+def root(request: Request):
+    """
+    Serve the secure OAuth landing page.
+
+    This is deliberately NOT bot.html. bot.html contains an auth guard that
+    redirects unauthenticated visitors to '/', so serving bot.html at '/'
+    creates an endless reload loop.
+    """
+    index_path = REPO_ROOT / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(status_code=404, detail="index.html not found")
+
+    html = index_path.read_text(encoding="utf-8")
+    origin = _origin_from_request(request)
+
+    # Force this deployment to use its own backend instead of the old API host.
+    html = html.replace(
+        'const DMS_API = "https://digitmatchstar-api.onrender.com";',
+        f'const DMS_API = "{origin}";',
+    )
+    return HTMLResponse(html)
+
+
+@app.get("/bot", include_in_schema=False)
 @app.get("/bot.html", include_in_schema=False)
-def root():
-    """Serve the existing DigitMatchStar bot UI from the repository root."""
+def bot_ui(request: Request):
+    """Serve the authenticated full bot UI from this same Render service."""
     bot_path = REPO_ROOT / "bot.html"
     if not bot_path.is_file():
         raise HTTPException(status_code=404, detail="bot.html not found")
-    return FileResponse(bot_path, media_type="text/html")
+
+    html = bot_path.read_text(encoding="utf-8")
+    origin = _origin_from_request(request)
+
+    # The original bot belongs to the primary DigitMatchStar deployment and
+    # contains that API URL in several places. This Top-4 deployment must use
+    # itself for OAuth, sessions, balances and server execution.
+    html = html.replace(
+        "https://digitmatchstar-api.onrender.com",
+        origin,
+    )
+
+    # In secure SERVER mode, the backend owns the authenticated Deriv channel.
+    # Do not run the old browser raw-token websocket bootstrap, which otherwise
+    # reports Offline because secure OAuth intentionally does not expose a raw
+    # Deriv token to the browser.
+    old_bootstrap = """setTimeout(() => {
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);"""
+    new_bootstrap = """setTimeout(() => {
+                if (window.SERVER_EXECUTION?.enabled) {
+                    log('☁ Secure server execution active · authenticated Deriv channel stays on backend', 'SYSTEM');
+                    updateConnectionStatus();
+                    return;
+                }
+
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);"""
+    html = html.replace(old_bootstrap, new_bootstrap)
+
+    # Make page scrolling resilient even if a stale mobile/browser style has
+    # locked the body.
+    scroll_fix = """
+<style id="dms-render-scroll-fix">
+html, body {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior-y: auto !important;
+}
+body {
+    position: static !important;
+    touch-action: pan-y !important;
+}
+</style>
+"""
+    html = html.replace("</head>", scroll_fix + "\n</head>", 1)
+
+    return HTMLResponse(html)
 
 
 FRONTEND_JS = {
@@ -114,7 +201,6 @@ FRONTEND_JS = {
 @app.get("/top4-basket-ui.js", include_in_schema=False)
 @app.get("/trade-alignment-export.js", include_in_schema=False)
 def frontend_js(request: Request):
-    """Serve the root-level JavaScript files referenced by bot.html."""
     name = Path(request.url.path).name
     if name not in FRONTEND_JS:
         raise HTTPException(status_code=404, detail="Frontend asset not found")
@@ -128,11 +214,6 @@ def frontend_js(request: Request):
 
 @app.get("/screen-recorder-safe-v5-2.js", include_in_schema=False)
 def optional_screen_recorder_stub():
-    """
-    bot.html references this optional recorder file, but it is not currently
-    present in the repository. Return harmless JavaScript instead of a 404 so
-    the rest of the bot UI continues loading normally.
-    """
     return Response(
         content='console.info("[DigitMatchStar] Optional screen recorder module is not installed.");',
         media_type="application/javascript",

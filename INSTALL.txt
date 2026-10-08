@@ -1,27 +1,35 @@
-OPEN BOT AT ROOT
+DIGITMATCHSTAR TOP-4 UI FIX
 
 Replace:
   app/main.py
 
-After Render redeploys, open:
-  https://digitmatchstar-top4-api.onrender.com/
+WHY THE BOT LOOPED
+The previous change served bot.html at '/'.
+But bot.html has an authentication guard that redirects an unauthenticated
+browser to '/'. That made '/' reload bot.html forever.
 
-The root URL now serves bot.html instead of JSON.
+THIS FIX
+1. '/' serves index.html (secure Deriv OAuth login page).
+2. '/bot.html' and '/bot' serve the full bot after login.
+3. The old hard-coded https://digitmatchstar-api.onrender.com references are
+   rewritten at response time to this Top-4 service's own URL.
+4. Secure SERVER mode no longer tries to open the obsolete browser raw-token
+   authenticated WebSocket during startup.
+5. Public Deriv market data remains browser-visible.
+6. A scroll safety override restores vertical scrolling.
+7. /health and /api/state remain backend health endpoints.
 
-Also served from the same backend:
-  /research-suite-loader.js
-  /passive-forward-readiness-v1.js
-  /tail-risk-model-v1.2-combined.js
-  /tick-rank-sync-v1.1.js
-  /top4-basket-ui.js
-  /trade-alignment-export.js
+KEEP RENDER:
+Start Command:
+  uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+Health Check:
+  /health
 
-The missing optional /screen-recorder-safe-v5-2.js reference is answered with
-a harmless JavaScript stub so it does not prevent the UI loading.
+IMPORTANT ENVIRONMENT:
+FRONTEND_URL should point to this service:
+  https://digitmatchstar-top4-api.onrender.com
 
-Keep:
-  Start Command:
-    uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+DERIV_REDIRECT_URI should be:
+  https://digitmatchstar-top4-api.onrender.com/auth/deriv/callback
 
-  Health Check:
-    /health
+The same callback URL must be registered in the Deriv OAuth application.
