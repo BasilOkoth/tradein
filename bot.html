@@ -9,12 +9,6 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>Deriv DigitMatchStar Bot</title>
-<!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
-<!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
-<!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
-<!-- V57.7.6 EXECUTION INTEGRITY: duplicate-recovery guard; T+0/provisional-match separation; Deriv-only confirmed wins -->
-<!-- Contract Lifecycle v3 -->
-<!-- SERVER EXECUTION V2.1 + V1.6 FRONTEND FAST-REACTION: exact-epoch research, per-trade recovery rerank, deterministic audio -->
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
 <style>
@@ -60,15 +54,12 @@
 @media (min-width: 640px){
   .control-btn{ padding:.45rem .8rem; font-size:.85rem; }
 }
-/* Make account toggle compact */
 .account-toggle-container{ display:inline-flex; align-items:center; gap:.5rem; flex-wrap:nowrap; }
 .account-label{ font-size:.8rem; font-weight:800; letter-spacing:.02em; opacity:.9; }
 @media (max-width: 639px){
   .account-toggle-container{ justify-content:flex-start; }
 }
 
-        
-/* --- Status indicators (non-clickable) --- */
 .status-chip{
   display:inline-flex;
   align-items:center;
@@ -286,7 +277,6 @@
             background: linear-gradient(90deg, #f59e0b, #d97706) !important;
             animation: pulse-once 0.8s infinite;
         }
-        /* Digit Intelligence Engine Styles */
         .engine-status-warmup {
             background: linear-gradient(90deg, #f59e0b, #d97706) !important;
             animation: pulse-once 0.8s infinite;
@@ -325,7 +315,6 @@
             box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
         }
     
-/* === Premium compact app header === */
 .app-header{
   display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
   padding:4px 0 14px;margin-bottom:16px;border-bottom:1px solid rgba(148,163,184,.16);
@@ -362,156 +351,134 @@
   .trade-actions #toggleButton,.trade-actions #s20Button{width:100%!important}
 }
 
+.edge-monitor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.edge-market-card{background:rgba(17,24,39,.86);border:1px solid rgba(107,114,128,.45);border-radius:10px;padding:10px}
+.edge-market-card.best{border-color:rgba(34,197,94,.75);box-shadow:0 0 0 1px rgba(34,197,94,.12),0 8px 24px rgba(0,0,0,.18)}
+.edge-score-bar{height:6px;border-radius:999px;background:#374151;overflow:hidden;margin-top:6px}
+.edge-score-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#64748b,#22c55e)}
+.edge-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;border:1px solid rgba(148,163,184,.25);background:rgba(30,41,59,.75)}
 
-        /* === DIGITMATCH ELIGIBLE MARKET SCANNER === */
-        .edge-monitor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-        .edge-market-card{background:rgba(17,24,39,.86);border:1px solid rgba(107,114,128,.45);border-radius:10px;padding:10px}
-        .edge-market-card.best{border-color:rgba(34,197,94,.75);box-shadow:0 0 0 1px rgba(34,197,94,.12),0 8px 24px rgba(0,0,0,.18)}
-        .edge-score-bar{height:6px;border-radius:999px;background:#374151;overflow:hidden;margin-top:6px}
-        .edge-score-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#64748b,#22c55e)}
-        .edge-pill{display:inline-flex;align-items:center;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;border:1px solid rgba(148,163,184,.25);background:rgba(30,41,59,.75)}
+.research-action-bar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    flex-wrap:wrap;
+    padding:14px 16px;
+    margin-bottom:12px;
+    border:1px solid rgba(148,163,184,.18);
+    border-radius:16px;
+    background:
+        radial-gradient(circle at top right, rgba(34,197,94,.08), transparent 34%),
+        linear-gradient(145deg, rgba(17,24,39,.96), rgba(15,23,42,.92));
+    box-shadow:
+        0 12px 30px rgba(0,0,0,.24),
+        inset 0 1px 0 rgba(255,255,255,.03);
+    backdrop-filter: blur(12px);
+}
+.research-action-title-wrap{
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+    min-width:180px;
+}
+.research-action-title{
+    font-size:1rem;
+    font-weight:900;
+    color:#e5e7eb;
+    letter-spacing:.01em;
+}
+.research-action-subtitle{
+    font-size:.72rem;
+    color:#94a3b8;
+    line-height:1.25;
+}
+.research-action-buttons{
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-left:auto;
+}
+.premium-research-btn{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:8px;
+    min-height:44px;
+    padding:0 16px;
+    border-radius:12px;
+    border:1px solid rgba(255,255,255,.12);
+    color:white;
+    font-size:.82rem;
+    font-weight:850;
+    letter-spacing:.01em;
+    box-shadow:
+        0 8px 18px rgba(0,0,0,.24),
+        inset 0 1px 0 rgba(255,255,255,.06);
+    transition:
+        transform .12s ease,
+        filter .16s ease,
+        box-shadow .16s ease,
+        border-color .16s ease;
+    white-space:nowrap;
+    cursor:pointer;
+}
+.premium-research-btn:hover{
+    transform:translateY(-1px);
+    filter:brightness(1.06);
+    box-shadow:
+        0 12px 24px rgba(0,0,0,.28),
+        inset 0 1px 0 rgba(255,255,255,.08);
+    border-color:rgba(255,255,255,.18);
+}
+.premium-research-btn:active{
+    transform:translateY(0) scale(.99);
+}
+.premium-research-btn:focus-visible{
+    outline:none;
+    box-shadow:
+        0 0 0 3px rgba(148,163,184,.18),
+        0 10px 22px rgba(0,0,0,.24);
+}
+.premium-export-btn{
+    background:linear-gradient(135deg,#0f766e,#0891b2);
+}
+.premium-reset-btn{
+    background:linear-gradient(135deg,#9f1239,#be123c);
+}
+.premium-overnight-btn{
+    background:linear-gradient(135deg,#5b21b6,#7c3aed);
+}
+.premium-overnight-btn.is-on{
+    background:linear-gradient(135deg,#047857,#059669);
+    box-shadow:
+        0 10px 24px rgba(5,150,105,.22),
+        inset 0 1px 0 rgba(255,255,255,.08);
+}
+@media (max-width: 767px){
+    .research-action-bar{
+        align-items:stretch;
+        padding:12px;
+        gap:12px;
+    }
+    .research-action-title-wrap{
+        width:100%;
+    }
+    .research-action-buttons{
+        width:100%;
+        margin-left:0;
+        display:grid;
+        grid-template-columns:1fr;
+        gap:9px;
+    }
+    .premium-research-btn{
+        width:100%;
+        min-height:46px;
+    }
+}
 
-    
-
-/* Experimental lab CSS removed in V51 CORE CLEAN. */
-
-        /* === V57.7.5 Premium research control bar === */
-        .research-action-bar{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:14px;
-            flex-wrap:wrap;
-            padding:14px 16px;
-            margin-bottom:12px;
-            border:1px solid rgba(148,163,184,.18);
-            border-radius:16px;
-            background:
-                radial-gradient(circle at top right, rgba(34,197,94,.08), transparent 34%),
-                linear-gradient(145deg, rgba(17,24,39,.96), rgba(15,23,42,.92));
-            box-shadow:
-                0 12px 30px rgba(0,0,0,.24),
-                inset 0 1px 0 rgba(255,255,255,.03);
-            backdrop-filter: blur(12px);
-        }
-
-        .research-action-title-wrap{
-            display:flex;
-            flex-direction:column;
-            gap:2px;
-            min-width:180px;
-        }
-
-        .research-action-title{
-            font-size:1rem;
-            font-weight:900;
-            color:#e5e7eb;
-            letter-spacing:.01em;
-        }
-
-        .research-action-subtitle{
-            font-size:.72rem;
-            color:#94a3b8;
-            line-height:1.25;
-        }
-
-        .research-action-buttons{
-            display:flex;
-            align-items:center;
-            justify-content:flex-end;
-            gap:10px;
-            flex-wrap:wrap;
-            margin-left:auto;
-        }
-
-        .premium-research-btn{
-            display:inline-flex;
-            align-items:center;
-            justify-content:center;
-            gap:8px;
-            min-height:44px;
-            padding:0 16px;
-            border-radius:12px;
-            border:1px solid rgba(255,255,255,.12);
-            color:white;
-            font-size:.82rem;
-            font-weight:850;
-            letter-spacing:.01em;
-            box-shadow:
-                0 8px 18px rgba(0,0,0,.24),
-                inset 0 1px 0 rgba(255,255,255,.06);
-            transition:
-                transform .12s ease,
-                filter .16s ease,
-                box-shadow .16s ease,
-                border-color .16s ease;
-            white-space:nowrap;
-            cursor:pointer;
-        }
-
-        .premium-research-btn:hover{
-            transform:translateY(-1px);
-            filter:brightness(1.06);
-            box-shadow:
-                0 12px 24px rgba(0,0,0,.28),
-                inset 0 1px 0 rgba(255,255,255,.08);
-            border-color:rgba(255,255,255,.18);
-        }
-
-        .premium-research-btn:active{
-            transform:translateY(0) scale(.99);
-        }
-
-        .premium-research-btn:focus-visible{
-            outline:none;
-            box-shadow:
-                0 0 0 3px rgba(148,163,184,.18),
-                0 10px 22px rgba(0,0,0,.24);
-        }
-
-        .premium-export-btn{
-            background:linear-gradient(135deg,#0f766e,#0891b2);
-        }
-
-        .premium-reset-btn{
-            background:linear-gradient(135deg,#9f1239,#be123c);
-        }
-
-        .premium-overnight-btn{
-            background:linear-gradient(135deg,#5b21b6,#7c3aed);
-        }
-
-        .premium-overnight-btn.is-on{
-            background:linear-gradient(135deg,#047857,#059669);
-            box-shadow:
-                0 10px 24px rgba(5,150,105,.22),
-                inset 0 1px 0 rgba(255,255,255,.08);
-        }
-
-        @media (max-width: 767px){
-            .research-action-bar{
-                align-items:stretch;
-                padding:12px;
-                gap:12px;
-            }
-            .research-action-title-wrap{
-                width:100%;
-            }
-            .research-action-buttons{
-                width:100%;
-                margin-left:0;
-                display:grid;
-                grid-template-columns:1fr;
-                gap:9px;
-            }
-            .premium-research-btn{
-                width:100%;
-                min-height:46px;
-            }
-        }
-
-
-/* === SERVER EXECUTION ENGINE === */
 .server-exec-panel{
   margin-bottom:1rem;padding:12px 14px;border-radius:14px;
   border:1px solid rgba(56,189,248,.35);
@@ -549,13 +516,11 @@
 </div>
 </div>
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-<!-- LEFT COLUMN: MARKET STATUS & ENGINE ANALYSIS -->
 <div class="lg:col-span-1">
 <div class="bg-gray-900 border border-gray-700 rounded-xl p-4 shadow-lg">
 <h2 class="text-lg font-bold text-cyan-400 mb-4 pb-2 border-b border-gray-700">
                         📊 MARKET STATUS
                     </h2>
-<!-- Connection Status -->
 <div class="mb-4 p-3 bg-gray-800 rounded-lg border border-gray-600">
 <h3 class="text-sm font-bold text-gray-300 mb-2">Market Status</h3>
 <div class="grid grid-cols-2 gap-2 text-xs">
@@ -577,7 +542,6 @@
 </div>
 </div>
 </div>
-<!-- Digit Intelligence Engine Panel -->
 <div class="mb-4 p-3 bg-gray-800 rounded-lg border border-purple-500/50">
 <h3 class="text-sm font-bold text-purple-400 mb-3 flex items-center">
                             🧠 DIGIT INTELLIGENCE ENGINE
@@ -585,19 +549,16 @@
                                 0%
                             </span>
 </h3>
-<!-- Engine Status -->
 <div class="mb-3 p-2 bg-gray-900 rounded border border-gray-700">
 <div class="text-xs font-semibold text-gray-300 mb-1">Status:</div>
 <div class="text-sm font-bold text-yellow-400" id="engine-status-text">Warming up...</div>
 <div class="text-xs text-gray-400 mt-1" id="engine-regime-status">Regime: Unknown</div>
 </div>
-<!-- Selected Digit -->
 <div class="mb-3 p-2 bg-gray-900 rounded border border-green-500/30">
 <div class="text-xs font-semibold text-green-400 mb-1">AI Recommended Digit:</div>
 <div class="text-2xl font-bold text-center text-green-400" id="ai-recommended-digit">-</div>
 <div class="text-xs text-gray-400 text-center" id="ai-digit-score">Score: -</div>
 </div>
-<!-- Digit Analysis (Collapsible) -->
 <div class="mt-2">
 <button class="w-full text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded mb-2" onclick="toggleDigitAnalysis()">
                                 📊 Show Digit Analysis <span id="digit-analysis-toggle">▼</span>
@@ -610,7 +571,6 @@
 </div>
 </div>
 </div>
-<!-- Session Status Display -->
 <div class="mt-4 p-3 bg-gray-800 rounded border border-blue-500/30 hidden" id="session_display">
 <h3 class="text-sm font-bold text-blue-300 mb-2">Active Session</h3>
 <div class="flex items-center justify-between">
@@ -626,9 +586,7 @@
 </div>
 </div>
 </div>
-<!-- MIDDLE COLUMN: MAIN CONTROLS -->
 <div class="lg:col-span-2">
-<!-- DIGITMATCH ELIGIBLE MARKET SCANNER -->
 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-cyan-500/50 shadow-lg" id="edge-market-scanner">
 <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
 <h2 class="text-lg font-bold text-cyan-400">🛰️ DIGITMATCH MARKET EDGE MONITOR</h2>
@@ -649,7 +607,6 @@
 </div>
 </div>
 </div>
-<!-- SAFE-TICK V1 SHADOW VALIDATION -->
 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-emerald-500/50 shadow-lg" id="safe-tick-v1-panel">
 <div class="flex flex-wrap items-center gap-2 mb-3 pb-2 border-b border-gray-700">
 <h2 class="text-lg font-bold text-emerald-400">🛡️ SAFE-TICK V1</h2>
@@ -724,7 +681,6 @@
                         </div>
 </div>
 </div>
-<!-- SERVER EXECUTION ENGINE -->
 <div class="server-exec-panel" id="server-execution-panel">
 <div class="flex flex-wrap items-center gap-2 mb-3">
 <h2 class="text-sm font-black text-sky-300">☁ SERVER EXECUTION</h2>
@@ -759,7 +715,6 @@
 <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div class="server-exec-value" id="serverExecPnl">$0.00</div></div>
 </div>
 </div>
-<!-- MARTINGALE CALCULATOR -->
 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
 <h2 class="text-lg font-bold text-purple-400 mb-3 pb-2 border-b border-gray-700 flex items-center">
                         🧮 MARTINGALE CALCULATOR
@@ -769,7 +724,6 @@
 </h2>
 <div class="transition-all duration-300" id="calculatorContent">
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-<!-- Left Column: Inputs -->
 <div class="space-y-3">
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1">Base Stake ($)</label>
@@ -791,7 +745,6 @@
                                     🧮 CALCULATE
                                 </button>
 </div>
-<!-- Right Column: Results -->
 <div class="space-y-3">
 <div class="p-3 bg-gray-800 rounded-lg border border-green-500/50">
 <div class="text-xs font-semibold text-green-400 mb-1">Total Required</div>
@@ -815,16 +768,13 @@
 </div>
 </div>
 </div>
-<!-- Stake Progression Table -->
 <div class="mt-4">
 <div class="text-xs font-semibold text-gray-300 mb-2">Stake Progression</div>
 <div class="text-xs text-gray-400 italic" id="calc_progression">Click CALCULATE to see stake progression</div>
 </div>
 </div>
 </div>
-<!-- Main Trading Controls -->
 <div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
-<!-- Symbol -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="symbol">Symbol</label>
 <select class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="symbol">
@@ -835,7 +785,6 @@
 <option value="R_75">V. 75 Index</option>
 </select>
 </div>
-<!-- Predicted Digit -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="predictedDigit">
                             Current Digit
@@ -847,36 +796,30 @@
                             </button>
 </div>
 </div>
-<!-- Contract Type -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="contractType">Contract Type</label>
 <select class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="contractType">
 <option value="DIGITMATCH">DIGITMATCH</option>
 </select>
 </div>
-<!-- Base Stake -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="baseStake">Base Stake</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="baseStake" min="0.1" step="0.1" type="number" value="1.0"/>
 </div>
-<!-- Multiplier -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="multiplier">Multiplier</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="multiplier" min="1.0" step="0.01" type="number" value="1.15"/>
 </div>
-<!-- Max Trades -->
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="maxTrades">Max Trades</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
 <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
 </div>
-<!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
                             Choose any positive Max Trades value. Target recycle remains fixed at V1 #1 after every loss.
                         </p>
 </div>
-<!-- Mode Toggle - ONLY INSTANT AND SCORE AUTO -->
 <div class="col-span-2 lg:col-span-3">
 <label class="block text-xs font-semibold text-gray-300 mb-1">Execution Mode</label>
 <div class="grid grid-cols-2 gap-2">
@@ -892,7 +835,6 @@
                         </p>
 </div>
 </div>
-<!-- METRICS -->
 <div class="grid grid-cols-3 gap-3">
 <div class="bg-gray-700 rounded-lg p-2 shadow-inner border border-green-500/50 col-span-2">
 <p class="text-[10px] font-semibold text-green-500 uppercase">Current Tick</p>
@@ -916,7 +858,6 @@
 <p class="text-[10px] font-semibold text-green-500 uppercase">Stake</p>
 <p class="text-lg font-bold text-white" id="metricCurrentStake">$0.00</p>
 </div>
-<!-- TRADE STATUS SECTION -->
 <div class="bg-gray-900 rounded-lg p-3 shadow-inner border border-yellow-500/50 col-span-3" id="trade-result-container">
 <div class="flex justify-between items-center mb-2">
 <p class="text-[10px] font-semibold text-yellow-500 uppercase">TRADE STATUS</p>
@@ -930,16 +871,13 @@
 <p class="text-[10px] font-semibold text-gray-400 uppercase mb-1">Action:</p>
 <p class="text-sm font-bold text-yellow-400" id="metricNextAction">Start bot to begin</p>
 </div>
-
 <div class="trade-actions">
 <button class="bg-green-600 text-white font-bold hover:bg-green-700 transition duration-150" id="toggleButton" onclick="toggleBot()">🚀 START BOT</button>
-
 </div>
 </div>
 </div>
 </div>
 </div>
-<!-- LOG AREA -->
 <div class="w-full flex flex-col" id="log-column">
 <div class="research-action-bar">
 <div class="research-action-title-wrap">
@@ -947,15 +885,11 @@
 <div class="research-action-subtitle">Trading status and execution log</div>
 </div>
 <div class="research-action-buttons">
-
-
 <button class="premium-research-btn premium-reset-btn" id="resetPerformanceBtn" onclick="resetAllPerformanceData()" title="Clear saved P/L and cycle performance while preserving research histories" type="button">
 <span>♻</span><span>RESET PERFORMANCE</span>
 </button>
-
 </div>
 </div>
-
 <div class="flex-grow h-80 bg-gray-900 text-lime-400 p-2.5 rounded-lg overflow-y-scroll text-xs whitespace-pre-wrap shadow-inner" id="log-area">
 [00:00:00] 🤖 Deriv Bot Initialized
 [00:00:00] 📊 Ready to connect to live market
@@ -965,1832 +899,3 @@
             </div>
 </div>
 </div>
-<script>
-        // ============================================================================
-        // UI ONLY — MINIMIZABLE PANELS
-        // No trading logic, cycle logic, or existing history storage is changed.
-        // ============================================================================
-
-        function toggleResearchPanel(bodyId, buttonId, storageKey) {
-            const body = document.getElementById(bodyId);
-            const btn = document.getElementById(buttonId);
-            if (!body) return;
-            const willHide = !body.classList.contains('hidden');
-            body.classList.toggle('hidden', willHide);
-            if (btn) btn.textContent = willHide ? '+' : '−';
-            try {
-                sessionStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
-            } catch (_) {}
-            try {
-                localStorage.setItem(`matchstar_panel_min_${storageKey}`, willHide ? '1' : '0');
-            } catch (_) {}
-        }
-
-        function restoreResearchPanelState(bodyId, buttonId, storageKey) {
-            let minimized = false;
-            try {
-                const sessionSaved = sessionStorage.getItem(`matchstar_panel_min_${storageKey}`);
-                minimized = sessionSaved !== null
-                    ? sessionSaved === '1'
-                    : localStorage.getItem(`matchstar_panel_min_${storageKey}`) === '1';
-            } catch (_) {}
-            const body = document.getElementById(bodyId);
-            const btn = document.getElementById(buttonId);
-            if (body) body.classList.toggle('hidden', minimized);
-            if (btn) btn.textContent = minimized ? '+' : '−';
-        }
-
-        function getPanelMinimizedState(key, fallback = false) {
-            const storageKey = `matchstar_panel_min_${key}`;
-            try {
-                const sessionSaved = sessionStorage.getItem(storageKey);
-                if (sessionSaved !== null) return sessionSaved === '1';
-            } catch (_) {}
-            try {
-                const localSaved = localStorage.getItem(storageKey);
-                return localSaved === null ? !!fallback : localSaved === '1';
-            } catch (_) {
-                return !!fallback;
-            }
-        }
-
-        function savePanelMinimizedState(key, minimized) {
-            const storageKey = `matchstar_panel_min_${key}`;
-            const value = minimized ? '1' : '0';
-            try { sessionStorage.setItem(storageKey, value); } catch (_) {}
-            try { localStorage.setItem(storageKey, value); } catch (_) {}
-        }
-
-        function makePanelMinimizable(panel, options = {}) {
-            if (!panel || panel.dataset.matchstarMinReady === '1') return;
-
-            // Panels with their own built-in minimize controls should not be wrapped again.
-            if (
-                panel.querySelector(':scope > .matchstar-min-body') ||
-                panel.querySelector('[id$="-min-btn"]') ||
-                panel.querySelector('[id$="-minimize"]')
-            ) {
-                panel.dataset.matchstarMinReady = 'native';
-                return;
-            }
-
-            const key = options.key || panel.id || 'panel';
-            const defaultMinimized = !!options.defaultMinimized;
-            const children = Array.from(panel.children);
-            if (!children.length) return;
-
-            const header = children[0];
-            const body = document.createElement('div');
-            body.className = 'matchstar-min-body';
-            body.id = `${key}-min-body`;
-
-            children.slice(1).forEach(node => body.appendChild(node));
-            panel.appendChild(body);
-
-            if (!header.classList.contains('flex')) {
-                header.classList.add('flex', 'items-center', 'gap-2');
-            }
-
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className =
-                'ml-auto shrink-0 text-xs bg-gray-700 hover:bg-gray-600 ' +
-                'px-2 py-1 rounded font-bold text-white';
-            btn.setAttribute('aria-controls', body.id);
-            header.appendChild(btn);
-
-            let minimized = getPanelMinimizedState(key, defaultMinimized);
-
-            const applyState = () => {
-                body.classList.toggle('hidden', minimized);
-                btn.textContent = minimized ? '+' : '−';
-                btn.title = minimized ? 'Expand panel' : 'Minimize panel';
-                btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-                savePanelMinimizedState(key, minimized);
-            };
-
-            btn.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                minimized = !minimized;
-                applyState();
-            });
-
-            panel.dataset.matchstarMinReady = '1';
-            applyState();
-        }
-
-        function initializeStaticMinimizablePanels() {
-            const marketPanel = document.querySelector(
-                '.lg\\:col-span-1 > .bg-gray-900.border.border-gray-700.rounded-xl'
-            );
-            if (marketPanel) {
-                makePanelMinimizable(marketPanel, { key: 'market-engine' });
-            }
-
-            const tradeStatus = document.getElementById('trade-result-container');
-            if (tradeStatus) {
-                makePanelMinimizable(tradeStatus, { key: 'trade-status' });
-            }
-
-            const logColumn = document.getElementById('log-column');
-            if (logColumn) {
-                makePanelMinimizable(logColumn, {
-                    key: 'live-log',
-                    defaultMinimized: true
-                });
-            }
-        }
-
-        function decorateDynamicMinimizablePanels() {
-            const configs = [
-                ['next-tick-edge-panel', 'next-tick-edge'],
-                ['cycle-performance-panel', 'cycle-performance'],
-                ['tail-risk-panel', 'tail-risk'],
-                ['tail-precursor-panel', 'tail-precursor'],
-                ['post-stop-depth-panel', 'post-stop-depth'],
-                ['digit-dna-panel', 'digit-dna'],
-                ['digit-feature-panel', 'digit-feature'],
-                ['randomness-auditor-panel', 'randomness-auditor'],
-                ['safe-tick-v1-panel', 'safe-tick-v1']
-            ];
-
-            for (const [id, key] of configs) {
-                const panel = document.getElementById(id);
-                if (panel) makePanelMinimizable(panel, { key });
-            }
-        }
-
-        let matchstarMinObserver = null;
-
-        function startMinimizablePanelUI() {
-            try {
-                initializeStaticMinimizablePanels();
-                decorateDynamicMinimizablePanels();
-
-                if (!matchstarMinObserver && document.body) {
-                    matchstarMinObserver = new MutationObserver(() => {
-                        try { decorateDynamicMinimizablePanels(); } catch (_) {}
-                    });
-
-                    matchstarMinObserver.observe(document.body, {
-                        childList: true,
-                        subtree: true
-                    });
-                }
-            } catch (err) {
-                console.warn('[DigitMatchStar] minimizable panel initialization warning:', err);
-            }
-        }
-
-        // Initialize minimizable UI independently of the trading/bootstrap listener.
-        // This keeps panel controls working even if another startup component throws.
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', startMinimizablePanelUI, { once: true });
-        } else {
-            setTimeout(startMinimizablePanelUI, 0);
-        }
-
-        // Universal fallback for minimize buttons using aria-controls.
-        document.addEventListener('click', (event) => {
-            const btn = event.target.closest('button[aria-controls]');
-            if (!btn) return;
-            const bodyId = btn.getAttribute('aria-controls');
-            if (!bodyId) return;
-            const body = document.getElementById(bodyId);
-            if (!body) return;
-
-            // Buttons initialized by makePanelMinimizable already have their own listener.
-            if (btn.closest('[data-matchstar-min-ready="1"]')) return;
-
-            event.preventDefault();
-            const minimized = !body.classList.contains('hidden');
-            body.classList.toggle('hidden', minimized);
-            btn.textContent = minimized ? '+' : '−';
-            btn.setAttribute('aria-expanded', minimized ? 'false' : 'true');
-        });
-
-        // ============================================================================
-        // AUTHENTICATION GUARD - users must authenticate before opening this bot file
-        // ============================================================================
-        function getPlatformJwt() {
-            return sessionStorage.getItem('dms_platform_jwt') ||
-                   localStorage.getItem('dms_platform_jwt') ||
-                   '';
-        }
-
-        function getStoredDerivToken() {
-            // V2.1: raw Deriv OAuth tokens are intentionally not stored in the browser.
-            // Legacy token lookup remains only for old browser-mode installations.
-            return localStorage.getItem('active_token') ||
-                   localStorage.getItem('derivToken') ||
-                   localStorage.getItem('derivTokenDemo') ||
-                   localStorage.getItem('derivTokenReal');
-        }
-
-        function getStoredDerivAccount() {
-            const mode =
-                sessionStorage.getItem('selectedAccountMode') ||
-                localStorage.getItem('selectedAccountMode');
-
-            const get = (key) =>
-                sessionStorage.getItem(key) ||
-                localStorage.getItem(key);
-
-            if (mode === 'DEMO') {
-                return get('active_account') ||
-                       get('derivAccount') ||
-                       get('derivDemoAccount');
-            }
-
-            if (mode === 'REAL') {
-                return get('active_account') ||
-                       get('derivAccount') ||
-                       get('derivRealAccount');
-            }
-
-            return get('active_account') ||
-                   get('derivAccount') ||
-                   get('derivDemoAccount') ||
-                   get('derivRealAccount');
-        }
-
-        function getDerivAppIdForRest() {
-            return localStorage.getItem('deriv_app_id') ||
-                   localStorage.getItem('deriv_client_id') ||
-                   '34uXWAMOwfAO5EtltnV4n';
-        }
-
-        function isBotAuthenticated() {
-            const authenticated =
-                sessionStorage.getItem('bot_authenticated') === 'true' ||
-                localStorage.getItem('bot_authenticated') === 'true';
-
-            return authenticated && !!getPlatformJwt();
-        }
-
-        if (!isBotAuthenticated()) {
-            window.location.replace('/');
-        }
-
-        // ============================================================================
-        // DERIV DIGIT MATCH INTELLIGENCE ENGINE - FIXED FOR DIGIT 0
-        // Warm-up (1000 ticks) → Live incremental → Regime + Smart digit selection
-        // ============================================================================
-        
-        // Global AI thresholds (single source of truth)
-        window.AI_THRESHOLDS = {
-            minSupport: 22,
-
-            // EARLY PRESSURE (REALISTIC MODE)
-            minH5: 0.42,        // 🔥 KEY CHANGE (from 0.50 → 0.45)
-            minP10: 0.66,       // slightly relaxed
-
-            maxPersistenceStable: 97,      // allow more clean cold
-            maxPersistenceStableRelax: 97,
-            maxPersistenceUnstable: 93,    // still strict when unstable
-
-            maxExtend: 3,
-            require_g_lt_p90: true
-        ,
-            // PRESSURE ZONE: only recommend digits whose current gap is close to P90
-            // Example: min=0.75 means "within last 15% of the P90 gap"
-            pressureZoneEnabled: true,
-            // Pressure is a ranking signal in V7, not a mandatory gate.
-            pressureZoneMinP90Ratio: 0.35,
-            pressureZoneMaxP90Ratio: 0.95,
-            pressureZoneMinFloorP90Ratio: 0.00,
-        };
-
-
-        // ============================================================================
-        // SURVIVAL CURVE ENGINE CONFIG (Empirical conditional survival from historical gaps)
-        // ============================================================================
-        window.SURVIVAL_WINDOW = 2000;   // rolling digits window (oldest -> newest)
-        window.lastDigits = [];          // rolling buffer of last digits for SurvivalEngine
-
-        // Ranking defaults (tweakable)
-        window.SURVIVAL_CFG = {
-            minPm5: 0.45,
-            maxS20: 0.20,
-            maxETM: 12,
-            requirePressure: false
-        };
-
-        // ============================================================================
-        // STRICT SAFETY CONSTANTS (single source of truth)
-        // ============================================================================
-        const MAX_EXTEND_RATIO = 1.5;
-        const MAX_ETM = 6.5;
-        const PRESSURE_MIN = 0.80;
-        const PRESSURE_MAX = 0.95;
-
-
-
-
-
-
-        // ============================================================================
-        // DIGITMATCHSTAR V56 — DIGIT DNA / PRECURSOR FINGERPRINT ENGINE
-        //
-        // For each digit 0..9, learn the conditions that existed BEFORE that digit
-        // appeared. Every historical event is labelled only after it occurred, and
-        // the feature vector uses preceding ticks only:
-        //   • exact predecessor distributions at lags 1..5
-        //   • preceding 2-, 3- and 4-digit contexts
-        //   • entropy of the previous 10 / 20 ticks
-        //   • target frequency in the previous 20 ticks
-        //   • target gap immediately before the hit
-        //   • run length immediately before the hit
-        //
-        // The current live context is compared with every digit's historical
-        // precursor fingerprint. "DNA match" is a similarity/ranking score, NOT a
-        // calibrated probability. A forward top-pick tracker measures whether this
-        // fingerprint has genuine predictive value on unseen ticks.
-        // ============================================================================
-        window.DIGIT_DNA_CONFIG = {
-            enabled: true,
-            historyWindow: 1500,
-            minEventsPerDigit: 12,
-            precursorWindow: 20,
-            lagDepth: 5,
-            aiBlend: 0.20,
-            overrideSimilarity: 0.82
-        };
-
-        window.digitDNAEngine = {
-            version: 'DNA-1-T1-PERFORMANCE',
-            lastSnapshot: null,
-            forward: {
-                pending: null,
-                n: 0,
-                hits: 0,
-                byDigit: Array.from({length:10},()=>({n:0,hits:0})),
-                records: [],
-                loadedSymbol: null,
-                maxRecords: 10000,
-                realizationActive: [],
-                realizationResolved: [],
-                maxResolvedRealizations: 10000,
-                maxRealizationDepth: 100
-            },
-
-            digits() {
-                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
-                    .map(Number)
-                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
-                    .slice(-window.DIGIT_DNA_CONFIG.historyWindow);
-            },
-
-            entropy(arr) {
-                if (!arr?.length) return 1;
-                const c=Array(10).fill(0);
-                arr.forEach(d=>c[d]++);
-                let h=0;
-                for(const n of c){
-                    if(!n) continue;
-                    const p=n/arr.length;
-                    h-=p*Math.log2(p);
-                }
-                return h/Math.log2(10);
-            },
-
-            runLengthBefore(arr, idx) {
-                if(idx<=0) return 0;
-                const d=arr[idx-1];
-                let n=1;
-                for(let j=idx-2;j>=0 && arr[j]===d;j--) n++;
-                return n;
-            },
-
-            previousGap(arr, idx, target) {
-                for(let j=idx-1;j>=0;j--){
-                    if(arr[j]===target) return idx-j-1;
-                }
-                return idx;
-            },
-
-            freqBefore(arr, idx, target, w=20) {
-                const s=arr.slice(Math.max(0,idx-w),idx);
-                if(!s.length) return 0.10;
-                let n=0;
-                s.forEach(d=>{if(d===target)n++;});
-                return n/s.length;
-            },
-
-            contextBefore(arr, idx, k) {
-                if(idx<k) return null;
-                return arr.slice(idx-k,idx).join('');
-            },
-
-            buildProfiles(arr) {
-                const cfg=window.DIGIT_DNA_CONFIG;
-                const profiles=Array.from({length:10},(_,digit)=>({
-                    digit,
-                    events:0,
-                    lagCounts:Array.from({length:cfg.lagDepth},()=>Array(10).fill(1)), // smoothing
-                    contexts2:{}, contexts3:{}, contexts4:{},
-                    entropy10:[], entropy20:[],
-                    freq20:[], preGap:[], runLength:[]
-                }));
-
-                for(let i=Math.max(20,cfg.lagDepth); i<arr.length; i++){
-                    const target=arr[i];
-                    const p=profiles[target];
-                    p.events++;
-
-                    for(let lag=1;lag<=cfg.lagDepth;lag++){
-                        const d=arr[i-lag];
-                        if(Number.isInteger(d)) p.lagCounts[lag-1][d]++;
-                    }
-
-                    for(const k of [2,3,4]){
-                        const key=this.contextBefore(arr,i,k);
-                        if(key!==null){
-                            const map=p[`contexts${k}`];
-                            map[key]=(map[key]||0)+1;
-                        }
-                    }
-
-                    p.entropy10.push(this.entropy(arr.slice(Math.max(0,i-10),i)));
-                    p.entropy20.push(this.entropy(arr.slice(Math.max(0,i-20),i)));
-                    p.freq20.push(this.freqBefore(arr,i,target,20));
-                    p.preGap.push(this.previousGap(arr,i,target));
-                    p.runLength.push(this.runLengthBefore(arr,i));
-                }
-
-                const mean=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:null;
-                const sd=a=>{
-                    if(a.length<2) return 0;
-                    const m=mean(a);
-                    return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1));
-                };
-                const topContexts=map=>Object.entries(map)
-                    .sort((a,b)=>b[1]-a[1])
-                    .slice(0,5)
-                    .map(([context,count])=>({context,count}));
-
-                return profiles.map(p=>{
-                    const lagP=p.lagCounts.map(row=>{
-                        const t=row.reduce((s,x)=>s+x,0);
-                        return row.map(x=>x/t);
-                    });
-                    return {
-                        digit:p.digit,
-                        events:p.events,
-                        lagP,
-                        top2:topContexts(p.contexts2),
-                        top3:topContexts(p.contexts3),
-                        top4:topContexts(p.contexts4),
-                        meanEntropy10:mean(p.entropy10),
-                        sdEntropy10:sd(p.entropy10),
-                        meanEntropy20:mean(p.entropy20),
-                        sdEntropy20:sd(p.entropy20),
-                        meanFreq20:mean(p.freq20),
-                        sdFreq20:sd(p.freq20),
-                        meanPreGap:mean(p.preGap),
-                        sdPreGap:sd(p.preGap),
-                        meanRun:mean(p.runLength),
-                        sdRun:sd(p.runLength)
-                    };
-                });
-            },
-
-            gaussianSimilarity(x, mean, sd, fallbackScale=1) {
-                if(!Number.isFinite(x)||!Number.isFinite(mean)) return 0.5;
-                const scale=Math.max(Number(sd)||0,fallbackScale);
-                const z=(x-mean)/scale;
-                return Math.exp(-0.5*z*z);
-            },
-
-            contextRate(arr, target, k) {
-                if(arr.length<=k) return {p:0.10,support:0};
-                const ctx=arr.slice(-k).join('');
-                let support=0,hits=0;
-                for(let i=k;i<arr.length;i++){
-                    if(arr.slice(i-k,i).join('')===ctx){
-                        support++;
-                        if(arr[i]===target) hits++;
-                    }
-                }
-                // Beta-like smoothing around 10%.
-                const prior=10;
-                return {p:(hits+prior*0.10)/(support+prior),support,ctx};
-            },
-
-            currentFeatures(arr,target) {
-                const n=arr.length;
-                return {
-                    lags:Array.from({length:window.DIGIT_DNA_CONFIG.lagDepth},(_,j)=>
-                        n-1-j>=0 ? arr[n-1-j] : null
-                    ),
-                    entropy10:this.entropy(arr.slice(-10)),
-                    entropy20:this.entropy(arr.slice(-20)),
-                    freq20:this.freqBefore(arr,n,target,20),
-                    gap:this.previousGap(arr,n,target),
-                    runLength:this.runLengthBefore(arr,n),
-                    c2:this.contextRate(arr,target,2),
-                    c3:this.contextRate(arr,target,3),
-                    c4:this.contextRate(arr,target,4)
-                };
-            },
-
-            scoreProfile(profile, current) {
-                if(!profile || profile.events < window.DIGIT_DNA_CONFIG.minEventsPerDigit){
-                    return {score:0,parts:{}};
-                }
-
-                // Likelihood of current last 5 digits under the historical
-                // predecessor distribution for this target.
-                let lagLog=0, lagN=0;
-                current.lags.forEach((d,i)=>{
-                    if(Number.isInteger(d)){
-                        const p=Math.max(1e-6,Number(profile.lagP?.[i]?.[d]||0.10));
-                        lagLog+=Math.log(p/0.10); // relative to uniform
-                        lagN++;
-                    }
-                });
-                const lagScore=lagN ? 1/(1+Math.exp(-(lagLog/lagN))) : 0.5;
-
-                const e10=this.gaussianSimilarity(
-                    current.entropy10,profile.meanEntropy10,profile.sdEntropy10,0.05
-                );
-                const e20=this.gaussianSimilarity(
-                    current.entropy20,profile.meanEntropy20,profile.sdEntropy20,0.04
-                );
-                const f20=this.gaussianSimilarity(
-                    current.freq20,profile.meanFreq20,profile.sdFreq20,0.03
-                );
-                const gap=this.gaussianSimilarity(
-                    current.gap,profile.meanPreGap,profile.sdPreGap,3
-                );
-                const run=this.gaussianSimilarity(
-                    current.runLength,profile.meanRun,profile.sdRun,1
-                );
-
-                // Exact current suffix conditional rates are powerful when supported,
-                // but sparse contexts are downweighted automatically.
-                const ctxScore=(c,kMin)=>{
-                    const rel=Math.min(1,c.support/kMin);
-                    const pNorm=Math.max(0,Math.min(1,(c.p-0.02)/0.20));
-                    return rel*pNorm+(1-rel)*0.5;
-                };
-                const c2=ctxScore(current.c2,12);
-                const c3=ctxScore(current.c3,8);
-                const c4=ctxScore(current.c4,5);
-
-                const score=
-                    0.28*lagScore+
-                    0.15*c2+
-                    0.10*c3+
-                    0.07*c4+
-                    0.08*e10+
-                    0.07*e20+
-                    0.08*f20+
-                    0.12*gap+
-                    0.05*run;
-
-                return {
-                    score,
-                    parts:{lagScore,c2,c3,c4,e10,e20,f20,gap,run}
-                };
-            },
-
-            forwardStorageKey(symbol) {
-                return `matchstar_dna_t1_v1_${symbol || 'UNKNOWN'}`;
-            },
-
-            realizationStorageKey(symbol) {
-                return `matchstar_dna_realization_v1_${symbol || 'UNKNOWN'}`;
-            },
-
-            ensureForwardLoaded(symbol=null) {
-                const sym = symbol || document.getElementById('symbol')?.value || window.tickFormat?.symbol || 'UNKNOWN';
-                if (this.forward.loadedSymbol === sym) return;
-
-                this.forward.loadedSymbol = sym;
-                this.forward.pending = null;
-
-                try {
-                    const raw = localStorage.getItem(this.forwardStorageKey(sym));
-                    const saved = raw ? JSON.parse(raw) : null;
-                    if (saved && Array.isArray(saved.records)) {
-                        this.forward.records = saved.records.slice(-this.forward.maxRecords);
-                        this.rebuildForwardStats();
-                    } else {
-                        this.forward.records = [];
-                        this.forward.n = 0;
-                        this.forward.hits = 0;
-                        this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
-                    }
-                } catch (_) {
-                    this.forward.records = [];
-                    this.forward.n = 0;
-                    this.forward.hits = 0;
-                    this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
-                }
-
-                try {
-                    const rzRaw = localStorage.getItem(this.realizationStorageKey(sym));
-                    const rz = rzRaw ? JSON.parse(rzRaw) : null;
-                    this.forward.realizationActive = Array.isArray(rz?.active) ? rz.active : [];
-                    this.forward.realizationResolved = Array.isArray(rz?.resolved)
-                        ? rz.resolved.slice(-this.forward.maxResolvedRealizations) : [];
-                } catch (_) {
-                    this.forward.realizationActive = [];
-                    this.forward.realizationResolved = [];
-                }
-            },
-
-            saveForward(symbol=null) {
-                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
-                try {
-                    localStorage.setItem(
-                        this.forwardStorageKey(sym),
-                        JSON.stringify({
-                            version:'DNA-T1-1',
-                            symbol:sym,
-                            updatedAt:Date.now(),
-                            records:this.forward.records.slice(-this.forward.maxRecords)
-                        })
-                    );
-                } catch (_) {}
-            },
-
-            saveRealizations(symbol=null) {
-                const sym = symbol || this.forward.loadedSymbol || document.getElementById('symbol')?.value || 'UNKNOWN';
-                try {
-                    localStorage.setItem(
-                        this.realizationStorageKey(sym),
-                        JSON.stringify({
-                            version:'DNA-REALIZATION-1',
-                            symbol:sym,
-                            updatedAt:Date.now(),
-                            active:this.forward.realizationActive || [],
-                            resolved:(this.forward.realizationResolved || []).slice(-this.forward.maxResolvedRealizations)
-                        })
-                    );
-                } catch (_) {}
-            },
-
-            rebuildForwardStats() {
-                this.forward.n = 0;
-                this.forward.hits = 0;
-                this.forward.byDigit = Array.from({length:10},()=>({n:0,hits:0}));
-                for (const r of this.forward.records || []) {
-                    const d = Number(r.predictedDigit);
-                    if (!Number.isInteger(d) || d < 0 || d > 9) continue;
-                    this.forward.n++;
-                    if (r.hit) this.forward.hits++;
-                    this.forward.byDigit[d].n++;
-                    if (r.hit) this.forward.byDigit[d].hits++;
-                }
-            },
-
-            wilson95(hits, n) {
-                hits = Number(hits || 0);
-                n = Number(n || 0);
-                if (!n) return {low:null, high:null};
-                const z = 1.959963984540054;
-                const p = hits / n;
-                const denom = 1 + (z*z)/n;
-                const center = (p + (z*z)/(2*n)) / denom;
-                const half = z * Math.sqrt((p*(1-p)/n) + (z*z)/(4*n*n)) / denom;
-                return {
-                    low: Math.max(0, center-half),
-                    high: Math.min(1, center+half)
-                };
-            },
-
-            summarizeRecords(records) {
-                const rows = Array.isArray(records) ? records : [];
-                const n = rows.length;
-                const hits = rows.reduce((s,r)=>s+(r.hit?1:0),0);
-                const rate = n ? hits/n : null;
-                const ci = this.wilson95(hits,n);
-                return {n,hits,rate,low95:ci.low,high95:ci.high};
-            },
-
-            t1Performance() {
-                const records = this.forward.records || [];
-                const bucket = (label, filter) => ({
-                    label,
-                    ...this.summarizeRecords(records.filter(filter))
-                });
-
-                const byDigit = Array.from({length:10},(_,digit)=>({
-                    digit,
-                    ...this.summarizeRecords(records.filter(r=>Number(r.predictedDigit)===digit))
-                }));
-
-                const similarityBuckets = [
-                    bucket('<50%', r=>Number(r.similarity)<0.50),
-                    bucket('50–55%', r=>Number(r.similarity)>=0.50 && Number(r.similarity)<0.55),
-                    bucket('55–60%', r=>Number(r.similarity)>=0.55 && Number(r.similarity)<0.60),
-                    bucket('60–65%', r=>Number(r.similarity)>=0.60 && Number(r.similarity)<0.65),
-                    bucket('65–70%', r=>Number(r.similarity)>=0.65 && Number(r.similarity)<0.70),
-                    bucket('≥70%', r=>Number(r.similarity)>=0.70)
-                ];
-
-                const marginBuckets = [
-                    bucket('<2 pp', r=>Number(r.margin)<0.02),
-                    bucket('2–5 pp', r=>Number(r.margin)>=0.02 && Number(r.margin)<0.05),
-                    bucket('5–8 pp', r=>Number(r.margin)>=0.05 && Number(r.margin)<0.08),
-                    bucket('≥8 pp', r=>Number(r.margin)>=0.08)
-                ];
-
-                const consensus = [
-                    bucket('DNA + Feature agree', r=>r.dnaFeatureAgree===true),
-                    bucket('DNA + Auditor agree', r=>r.dnaAuditorAgree===true),
-                    bucket('All 3 agree', r=>r.allThreeAgree===true)
-                ];
-
-                return {
-                    overall:this.summarizeRecords(records),
-                    randomBaseline:0.10,
-                    byDigit,
-                    similarityBuckets,
-                    marginBuckets,
-                    consensus
-                };
-            },
-
-            analyze(symbol=null) {
-                this.ensureForwardLoaded(symbol);
-                const arr=this.digits();
-                const profiles=this.buildProfiles(arr);
-                const rows=[];
-
-                for(let d=0;d<10;d++){
-                    const current=this.currentFeatures(arr,d);
-                    const scored=this.scoreProfile(profiles[d],current);
-                    rows.push({
-                        digit:d,
-                        similarity:scored.score,
-                        parts:scored.parts,
-                        profile:profiles[d],
-                        current
-                    });
-                }
-
-                rows.sort((a,b)=>b.similarity-a.similarity || a.digit-b.digit);
-                const top=rows[0], second=rows[1];
-                const margin=Math.max(0,(top?.similarity||0)-(second?.similarity||0));
-
-                const snap={
-                    ready: arr.length>=100 && profiles.every(p=>p.events>=window.DIGIT_DNA_CONFIG.minEventsPerDigit),
-                    historyN:arr.length,
-                    symbol,
-                    rows,
-                    profiles,
-                    topDigit:top?.digit ?? null,
-                    topSimilarity:top?.similarity ?? 0,
-                    secondSimilarity:second?.similarity ?? 0,
-                    margin,
-                    forwardN:this.forward.n,
-                    forwardHits:this.forward.hits,
-                    forwardHitRate:this.forward.n?this.forward.hits/this.forward.n:null,
-                    t1Performance:this.t1Performance()
-                };
-                this.lastSnapshot=snap;
-                this.render(snap);
-                return snap;
-            },
-
-            updateRealizationTrackers(actualDigit, symbol=null) {
-                const actual = Number(actualDigit);
-                if (!Number.isInteger(actual) || actual < 0 || actual > 9) return;
-
-                const nextActive = [];
-                for (const tr of (this.forward.realizationActive || [])) {
-                    const depth = Number(tr.depth || 0) + 1;
-
-                    if (actual === Number(tr.predictedDigit)) {
-                        this.forward.realizationResolved.push({
-                            ...tr,
-                            depth,
-                            resolvedAt:Date.now(),
-                            firstRealizationDepth:depth,
-                            within2:depth<=2,
-                            within3:depth<=3,
-                            within5:depth<=5,
-                            within10:depth<=10,
-                            within20:depth<=20,
-                            within50:depth<=50,
-                            censored:false
-                        });
-                    } else if (depth >= this.forward.maxRealizationDepth) {
-                        this.forward.realizationResolved.push({
-                            ...tr,
-                            depth,
-                            resolvedAt:Date.now(),
-                            firstRealizationDepth:null,
-                            within2:false,
-                            within3:false,
-                            within5:false,
-                            within10:false,
-                            within20:false,
-                            within50:false,
-                            censored:true
-                        });
-                    } else {
-                        nextActive.push({...tr, depth});
-                    }
-                }
-
-                this.forward.realizationActive = nextActive;
-                this.forward.realizationResolved = (this.forward.realizationResolved || [])
-                    .slice(-this.forward.maxResolvedRealizations);
-                this.saveRealizations(symbol);
-            },
-
-            startRealizationTracker(forecast) {
-                if (!forecast || !Number.isInteger(Number(forecast.digit))) return;
-                this.forward.realizationActive.push({
-                    version:'DNA-REALIZATION-1',
-                    symbol:forecast.symbol || this.forward.loadedSymbol || 'UNKNOWN',
-                    forecastAt:Number(forecast.at || Date.now()),
-                    predictedDigit:Number(forecast.digit),
-                    similarity:Number(forecast.similarity || 0),
-                    secondSimilarity:Number(forecast.secondSimilarity || 0),
-                    margin:Number(forecast.margin || 0),
-                    featureTop:Number.isInteger(Number(forecast.featureTop)) ? Number(forecast.featureTop) : null,
-                    auditorTop:Number.isInteger(Number(forecast.auditorTop)) ? Number(forecast.auditorTop) : null,
-                    dnaFeatureAgree:!!forecast.dnaFeatureAgree,
-                    dnaAuditorAgree:!!forecast.dnaAuditorAgree,
-                    allThreeAgree:!!forecast.allThreeAgree,
-                    depth:0
-                });
-            },
-
-            realizationPerformance() {
-                const rows = Array.isArray(this.forward.realizationResolved) ? this.forward.realizationResolved : [];
-                const realized = rows.filter(r => !r.censored && Number.isFinite(Number(r.firstRealizationDepth)));
-                const depths = realized.map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
-                const n = rows.length;
-                const within = (k) => n ? rows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=k).length/n : null;
-
-                const byDigit = Array.from({length:10},(_,digit)=>{
-                    const drows = rows.filter(r=>Number(r.predictedDigit)===digit);
-                    const dd = drows.filter(r=>!r.censored && Number.isFinite(Number(r.firstRealizationDepth)))
-                                    .map(r=>Number(r.firstRealizationDepth)).sort((a,b)=>a-b);
-                    const dn = drows.length;
-                    return {
-                        digit,
-                        n:dn,
-                        realized:dd.length,
-                        t1:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)===1).length/dn : null,
-                        within5:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=5).length/dn : null,
-                        within10:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=10).length/dn : null,
-                        within20:dn ? drows.filter(r=>!r.censored && Number(r.firstRealizationDepth)<=20).length/dn : null,
-                        meanDepth:dd.length ? dd.reduce((a,b)=>a+b,0)/dd.length : null,
-                        medianDepth:dd.length ? dd[Math.floor((dd.length-1)/2)] : null
-                    };
-                });
-
-                return {
-                    n,
-                    resolved:realized.length,
-                    censored:rows.filter(r=>r.censored).length,
-                    active:(this.forward.realizationActive || []).length,
-                    meanDepth:depths.length ? depths.reduce((a,b)=>a+b,0)/depths.length : null,
-                    medianDepth:depths.length ? depths[Math.floor((depths.length-1)/2)] : null,
-                    within2:within(2),
-                    within3:within(3),
-                    within5:within(5),
-                    within10:within(10),
-                    within20:within(20),
-                    within50:within(50),
-                    byDigit,
-                    note:'First future occurrence depth after the DNA forecast was frozen. This complements, but does not replace, T+1 accuracy.'
-                };
-            },
-
-            scorePendingOutcome(actualDigit, symbol=null) {
-                const p=this.forward.pending;
-                if(!p) return;
-
-                const actual=Number(actualDigit);
-                const predicted=Number(p.digit);
-                const hit=predicted===actual;
-
-                const record={
-                    version:'DNA-T1-1',
-                    symbol:p.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
-                    forecastAt:Number(p.at || Date.now()),
-                    resolvedAt:Date.now(),
-                    predictedDigit:predicted,
-                    actualDigit:actual,
-                    hit,
-                    similarity:Number(p.similarity||0),
-                    secondSimilarity:Number(p.secondSimilarity||0),
-                    margin:Number(p.margin||0),
-                    featureTop:Number.isInteger(Number(p.featureTop)) ? Number(p.featureTop) : null,
-                    auditorTop:Number.isInteger(Number(p.auditorTop)) ? Number(p.auditorTop) : null,
-                    dnaFeatureAgree:!!p.dnaFeatureAgree,
-                    dnaAuditorAgree:!!p.dnaAuditorAgree,
-                    allThreeAgree:!!p.allThreeAgree
-                };
-
-                this.forward.records.push(record);
-                if(this.forward.records.length>this.forward.maxRecords){
-                    this.forward.records.splice(0,this.forward.records.length-this.forward.maxRecords);
-                }
-
-                this.rebuildForwardStats();
-                this.saveForward(record.symbol);
-                this.forward.pending=null;
-            },
-
-            armNextForecast(symbol=null) {
-                const s=this.analyze(symbol);
-                if(!s?.ready || !Number.isInteger(Number(s.topDigit))) return;
-
-                const featureTop=Number(window.digitFeatureEngine?.lastSnapshot?.topDigit);
-                const auditorTop=Number(window.randomnessAuditor?.lastSnapshot?.topDigit);
-                const dnaTop=Number(s.topDigit);
-
-                this.forward.pending={
-                    digit:dnaTop,
-                    similarity:Number(s.topSimilarity||0),
-                    secondSimilarity:Number(s.secondSimilarity||0),
-                    margin:Number(s.margin||0),
-                    featureTop:Number.isInteger(featureTop)?featureTop:null,
-                    auditorTop:Number.isInteger(auditorTop)?auditorTop:null,
-                    dnaFeatureAgree:Number.isInteger(featureTop) && dnaTop===featureTop,
-                    dnaAuditorAgree:Number.isInteger(auditorTop) && dnaTop===auditorTop,
-                    allThreeAgree:
-                        Number.isInteger(featureTop) &&
-                        Number.isInteger(auditorTop) &&
-                        dnaTop===featureTop &&
-                        dnaTop===auditorTop,
-                    symbol:s.symbol || symbol || this.forward.loadedSymbol || 'UNKNOWN',
-                    at:Date.now()
-                };
-                this.startRealizationTracker(this.forward.pending);
-                this.saveRealizations(symbol);
-            },
-
-            onNewTick(actualDigit,symbol=null) {
-                // Forward-only DNA evaluation:
-                // 1) advance prior forecasts toward first-realization depth;
-                // 2) score the frozen T+1 forecast on this unseen tick;
-                // 3) arm a new forecast for the next unseen tick.
-                this.ensureForwardLoaded(symbol);
-                this.updateRealizationTrackers(actualDigit,symbol);
-                this.scorePendingOutcome(actualDigit,symbol);
-                this.armNextForecast(symbol);
-            },
-
-            ensurePanel() {
-                if(document.getElementById('digit-dna-panel')) return;
-                const ref=document.getElementById('digit-analysis-panel');
-                if(!ref || !ref.parentElement) return;
-
-                const panel=document.createElement('div');
-                panel.id='digit-dna-panel';
-                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-pink-500/30 text-xs';
-                panel.innerHTML=`
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="font-bold text-pink-300">🧬 DIGIT DNA · WHAT HAPPENS BEFORE EACH DIGIT</div>
-                    <button id="dna-min-btn" type="button"
-                            onclick="toggleResearchPanel('dna-min-body','dna-min-btn','digit-dna')"
-                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
-                  </div>
-                  <div id="dna-min-body">
-                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                      <span class="text-gray-400">History:</span><span id="dna-history" class="font-bold text-white">warming</span>
-                      <span class="text-gray-400">Closest DNA now:</span><span id="dna-top" class="font-bold text-pink-300">-</span>
-                      <span class="text-gray-400">DNA similarity:</span><span id="dna-sim" class="font-bold text-cyan-300">-</span>
-                      <span class="text-gray-400">T+1 overall:</span><span id="dna-forward" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">95% interval:</span><span id="dna-t1-ci" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">vs 10% baseline:</span><span id="dna-t1-lift" class="font-bold text-white">-</span>
-                    </div>
-                    <div id="dna-top3" class="mt-2 text-[11px] text-gray-300">Learning precursor fingerprints…</div>
-                    <div class="mt-3 border-t border-gray-700 pt-2">
-                      <div class="font-bold text-cyan-300 mb-1">T+1 PERFORMANCE · FORWARD ONLY</div>
-                      <div id="dna-t1-bydigit" class="text-[10px] text-gray-300">Collecting per-digit results…</div>
-                      <div id="dna-t1-sim" class="mt-2 text-[10px] text-gray-300">Collecting similarity buckets…</div>
-                      <div id="dna-t1-margin" class="mt-2 text-[10px] text-gray-300">Collecting separation buckets…</div>
-                      <div id="dna-t1-consensus" class="mt-2 text-[10px] text-gray-300">Collecting consensus states…</div>
-                    </div>
-                    <div class="mt-3 border-t border-violet-700 pt-2">
-                      <div class="font-bold text-violet-300 mb-1">DNA FIRST-REALIZATION DEPTH · SHADOW ONLY</div>
-                      <div id="dna-realization-summary" class="text-[10px] text-gray-300">Collecting first-realization depths…</div>
-                      <div id="dna-realization-bydigit" class="mt-2 text-[10px] text-gray-300">Collecting per-digit realization depths…</div>
-                    </div>
-                    <div id="dna-all" class="mt-3 text-[10px] text-gray-400"></div>
-                    <div class="mt-2 text-[10px] text-gray-500">
-                      DNA = historical precursor fingerprint, not a guaranteed probability.
-                      Every profile uses only ticks that occurred BEFORE each labelled digit.
-                    </div>
-                  </div>
-                `;
-                ref.parentElement.appendChild(panel);
-                restoreResearchPanelState('dna-min-body','dna-min-btn','digit-dna');
-            },
-
-            render(s=null) {
-                if(typeof document==='undefined') return;
-                this.ensurePanel();
-                s=s||this.lastSnapshot;
-                if(!s) return;
-                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
-                set('dna-history',`${s.historyN||0}${s.ready?' ✓':' · learning'}`);
-                set('dna-top',s.ready?String(s.topDigit):'-');
-                set('dna-sim',s.ready?`${(Number(s.topSimilarity||0)*100).toFixed(1)}%`:'-');
-                set('dna-forward',s.forwardN
-                    ? `${s.forwardHits}/${s.forwardN} = ${(s.forwardHitRate*100).toFixed(2)}%`
-                    : 'collecting');
-
-                const perf=s.t1Performance || this.t1Performance();
-                const overall=perf?.overall || {};
-                set('dna-t1-ci',overall.n
-                    ? `${(Number(overall.low95)*100).toFixed(2)}–${(Number(overall.high95)*100).toFixed(2)}%`
-                    : '-');
-                set('dna-t1-lift',overall.n
-                    ? `${((Number(overall.rate)-0.10)*100)>=0?'+':''}${((Number(overall.rate)-0.10)*100).toFixed(2)} pp`
-                    : '-');
-
-                const fmt=(x)=>{
-                    if(!x?.n) return `${x?.label ?? ''}: -`;
-                    return `${x?.label ?? ''}: ${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`;
-                };
-
-                const byDigitEl=document.getElementById('dna-t1-bydigit');
-                if(byDigitEl){
-                    byDigitEl.innerHTML='<b>By predicted digit:</b> '+
-                        (perf?.byDigit||[]).map(x=>
-                            `<span class="${x.n>=30 && x.rate>0.10?'text-cyan-300':'text-gray-300'}">`+
-                            `${x.digit}: ${x.n?`${x.hits}/${x.n} ${(x.rate*100).toFixed(1)}%`:'-'}</span>`
-                        ).join(' · ');
-                }
-
-                const simEl=document.getElementById('dna-t1-sim');
-                if(simEl){
-                    simEl.innerHTML='<b>Similarity:</b> '+
-                        (perf?.similarityBuckets||[]).map(fmt).join(' · ');
-                }
-
-                const marginEl=document.getElementById('dna-t1-margin');
-                if(marginEl){
-                    marginEl.innerHTML='<b>DNA separation:</b> '+
-                        (perf?.marginBuckets||[]).map(fmt).join(' · ');
-                }
-
-                const rz=this.realizationPerformance();
-                const rzEl=document.getElementById('dna-realization-summary');
-                if(rzEl){
-                    const pct=(v)=>v==null?'-':`${(Number(v)*100).toFixed(1)}%`;
-                    rzEl.innerHTML=
-                        `<b>Resolved:</b> ${rz.resolved}/${rz.n} · active ${rz.active} · censored ${rz.censored}<br>`+
-                        `<b>Within:</b> T+2 ${pct(rz.within2)} · T+5 ${pct(rz.within5)} · T+10 ${pct(rz.within10)} · T+20 ${pct(rz.within20)}<br>`+
-                        `<b>Depth:</b> mean ${rz.meanDepth==null?'-':Number(rz.meanDepth).toFixed(2)} · median ${rz.medianDepth==null?'-':rz.medianDepth}`;
-                }
-
-                const rzDigitEl=document.getElementById('dna-realization-bydigit');
-                if(rzDigitEl){
-                    rzDigitEl.innerHTML='<b>By predicted digit (within 10):</b> '+
-                        (rz.byDigit||[]).map(x=>`${x.digit}: ${x.n?`${(Number(x.within10||0)*100).toFixed(1)}% n=${x.n}`:'-'}`).join(' · ');
-                }
-
-                const consEl=document.getElementById('dna-t1-consensus');
-                if(consEl){
-                    consEl.innerHTML='<b>Consensus:</b> '+
-                        (perf?.consensus||[]).map(fmt).join(' · ');
-                }
-
-                const top3=document.getElementById('dna-top3');
-                if(top3){
-                    top3.innerHTML=s.rows.slice(0,3).map((r,i)=>{
-                        const p=r.profile;
-                        const pred1=p?.lagP?.[0]
-                            ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
-                            : null;
-                        return `#${i+1} <b>Digit ${r.digit}</b> · match ${(r.similarity*100).toFixed(1)}% · `+
-                               `events ${p?.events||0} · most common immediate predecessor `+
-                               `${pred1 ? pred1.d+' ('+(pred1.v*100).toFixed(1)+'%)' : '-'}`;
-                    }).join('<br>');
-                }
-
-                const all=document.getElementById('dna-all');
-                if(all){
-                    all.innerHTML=s.rows
-                      .slice()
-                      .sort((a,b)=>a.digit-b.digit)
-                      .map(r=>{
-                        const p=r.profile;
-                        const pred1=p?.lagP?.[0]
-                          ? p.lagP[0].map((v,d)=>({d,v})).sort((a,b)=>b.v-a.v)[0]
-                          : null;
-                        return `<div class="mb-1">
-                          <b class="text-pink-200">DNA ${r.digit}</b>:
-                          events ${p?.events||0} · before-hit predecessor ${pred1?pred1.d:'-'} ·
-                          mean pre-gap ${Number(p?.meanPreGap||0).toFixed(1)} ·
-                          mean H20 ${Number(p?.meanEntropy20||0).toFixed(3)} ·
-                          mean target F20 ${(Number(p?.meanFreq20||0)*100).toFixed(1)}% ·
-                          current match ${(r.similarity*100).toFixed(1)}%
-                        </div>`;
-                      }).join('');
-                }
-            }
-        };
-
-        // ============================================================================
-        // DIGITMATCHSTAR V55 — DIGIT FEATURE ENGINE
-        //
-        // Feature engineering discussed for cryptanalysis-style AI:
-        //   • multi-window digit frequencies (5/20/50/100/200)
-        //   • frequency momentum / acceleration
-        //   • 10x10 transition probabilities
-        //   • 2-, 3- and 4-gram conditional next-digit probabilities
-        //   • current gap, gap/average-gap and recent run length
-        //   • entropy at 20/50/100 ticks and entropy trend
-        //   • lag-1 mutual information
-        //   • tick interval, price direction and short volatility context
-        //
-        // This engine is a ranking feature source for SCORE AUTO only.
-        // It does not change INSTANT execution and does not claim these features
-        // are predictive until forward evidence demonstrates that.
-        // ============================================================================
-        window.DIGIT_FEATURE_CONFIG = {
-            enabled: true,
-            windows: [5,20,50,100,200],
-            maxHistory: 1000,
-            minHistory: 50,
-            ngramPrior: 2.0,
-            aiBlend: 0.25,
-            overrideSignal: 0.70
-        };
-
-        window.digitFeatureEngine = {
-            version: 'DFE-1',
-            lastSnapshot: null,
-
-            safeDigits() {
-                return (Array.isArray(window.lastDigits) ? window.lastDigits : [])
-                    .map(Number)
-                    .filter(d => Number.isInteger(d) && d >= 0 && d <= 9)
-                    .slice(-window.DIGIT_FEATURE_CONFIG.maxHistory);
-            },
-
-            entropyOf(arr) {
-                if (!arr?.length) return 1;
-                const counts=Array(10).fill(0);
-                arr.forEach(d=>counts[d]++);
-                let h=0;
-                for(const c of counts){
-                    if(!c) continue;
-                    const p=c/arr.length;
-                    h -= p*Math.log2(p);
-                }
-                return h/Math.log2(10);
-            },
-
-            mutualInformationLag1(arr) {
-                if (!arr || arr.length < 30) return 0;
-                const joint=Array.from({length:10},()=>Array(10).fill(0));
-                const a=Array(10).fill(0), b=Array(10).fill(0);
-                let n=0;
-                for(let i=0;i<arr.length-1;i++){
-                    const x=arr[i], y=arr[i+1];
-                    joint[x][y]++; a[x]++; b[y]++; n++;
-                }
-                if(!n) return 0;
-                let mi=0;
-                for(let x=0;x<10;x++) for(let y=0;y<10;y++){
-                    const c=joint[x][y];
-                    if(!c) continue;
-                    const pxy=c/n, px=a[x]/n, py=b[y]/n;
-                    mi += pxy*Math.log2(pxy/(px*py));
-                }
-                return Math.max(0,mi);
-            },
-
-            freq(arr, digit, n) {
-                const s=arr.slice(-Math.min(n,arr.length));
-                if(!s.length) return 0.10;
-                let hits=0;
-                for(const d of s) if(d===digit) hits++;
-                // Light shrinkage toward 10%.
-                const prior=5;
-                return (hits + prior*0.10)/(s.length+prior);
-            },
-
-            gap(arr,digit) {
-                for(let i=arr.length-1;i>=0;i--){
-                    if(arr[i]===digit) return arr.length-1-i;
-                }
-                return arr.length;
-            },
-
-            averageGap(arr,digit) {
-                const pos=[];
-                for(let i=0;i<arr.length;i++) if(arr[i]===digit) pos.push(i);
-                if(pos.length<2) return 10;
-                let total=0;
-                for(let i=1;i<pos.length;i++) total += pos[i]-pos[i-1]-1;
-                return total/(pos.length-1);
-            },
-
-            runLength(arr) {
-                if(!arr.length) return 0;
-                const d=arr[arr.length-1];
-                let n=1;
-                for(let i=arr.length-2;i>=0 && arr[i]===d;i--) n++;
-                return n;
-            },
-
-            conditional(arr, contextLength, digit) {
-                if(arr.length <= contextLength) return {p:0.10,support:0};
-                const ctx=arr.slice(-contextLength);
-                const counts=Array(10).fill(window.DIGIT_FEATURE_CONFIG.ngramPrior);
-                let support=0;
-                for(let i=0;i+contextLength<arr.length;i++){
-                    let ok=true;
-                    for(let j=0;j<contextLength;j++){
-                        if(arr[i+j]!==ctx[j]) {ok=false;break;}
-                    }
-                    if(!ok) continue;
-                    const next=arr[i+contextLength];
-                    if(Number.isInteger(next)){
-                        counts[next]++; support++;
-                    }
-                }
-                const total=counts.reduce((s,x)=>s+x,0);
-                return {p:counts[digit]/total,support};
-            },
-
-            transition(arr,digit) {
-                if(arr.length<2) return {p:0.10,support:0};
-                const prev=arr[arr.length-1];
-                const counts=Array(10).fill(2);
-                let support=0;
-                for(let i=0;i<arr.length-1;i++){
-                    if(arr[i]===prev){
-                        counts[arr[i+1]]++; support++;
-                    }
-                }
-                const total=counts.reduce((s,x)=>s+x,0);
-                return {p:counts[digit]/total,support};
-            },
-
-            marketContext() {
-                const rows=Array.isArray(window.recentMarketTicks)
-                    ? window.recentMarketTicks.slice(-40) : [];
-
-                const prices=rows.map(x=>Number(x.price)).filter(Number.isFinite);
-                const times=rows.map(x=>Number(x.raw?.epoch || 0)).filter(x=>x>0);
-
-                let direction=0, volatility=0, meanInterval=null;
-                if(prices.length>=2){
-                    const diffs=[];
-                    for(let i=1;i<prices.length;i++) diffs.push(prices[i]-prices[i-1]);
-                    direction=diffs.reduce((s,x)=>s+Math.sign(x),0)/diffs.length;
-                    const mean=diffs.reduce((s,x)=>s+x,0)/diffs.length;
-                    volatility=Math.sqrt(diffs.reduce((s,x)=>s+(x-mean)*(x-mean),0)/diffs.length);
-                }
-                if(times.length>=2){
-                    const ints=[];
-                    for(let i=1;i<times.length;i++) if(times[i]>times[i-1]) ints.push(times[i]-times[i-1]);
-                    if(ints.length) meanInterval=ints.reduce((s,x)=>s+x,0)/ints.length;
-                }
-                return {direction,volatility,meanInterval,n:rows.length};
-            },
-
-            analyze(symbol=null) {
-                const arr=this.safeDigits();
-                const n=arr.length;
-                const cfg=window.DIGIT_FEATURE_CONFIG;
-
-                const e20=this.entropyOf(arr.slice(-20));
-                const e50=this.entropyOf(arr.slice(-50));
-                const e100=this.entropyOf(arr.slice(-100));
-                const entropyTrend=e20-e100;
-                const mi=this.mutualInformationLag1(arr.slice(-Math.min(500,n)));
-                const runLength=this.runLength(arr);
-                const market=this.marketContext();
-
-                if(n<cfg.minHistory){
-                    const snap={
-                        ready:false,historyN:n,symbol,
-                        entropy20:e20,entropy50:e50,entropy100:e100,
-                        entropyTrend,mutualInformation:mi,
-                        runLength,market,rows:[],topDigit:null,signalStrength:0
-                    };
-                    this.lastSnapshot=snap;
-                    this.render(snap);
-                    return snap;
-                }
-
-                const rows=[];
-                for(let d=0;d<10;d++){
-                    const f5=this.freq(arr,d,5);
-                    const f20=this.freq(arr,d,20);
-                    const f50=this.freq(arr,d,50);
-                    const f100=this.freq(arr,d,100);
-                    const f200=this.freq(arr,d,200);
-
-                    const momentum=f20-f100;
-                    const acceleration=(f5-f20)-(f20-f50);
-
-                    const tr=this.transition(arr,d);
-                    const n2=this.conditional(arr,2,d);
-                    const n3=this.conditional(arr,3,d);
-                    const n4=this.conditional(arr,4,d);
-
-                    const gap=this.gap(arr,d);
-                    const avgGap=Math.max(0.5,this.averageGap(arr,d));
-                    const gapRatio=gap/avgGap;
-
-                    // Reliability shrinks sparse n-grams toward 10%.
-                    const r2=Math.min(1,n2.support/12);
-                    const r3=Math.min(1,n3.support/8);
-                    const r4=Math.min(1,n4.support/5);
-                    const p2=r2*n2.p+(1-r2)*0.10;
-                    const p3=r3*n3.p+(1-r3)*0.10;
-                    const p4=r4*n4.p+(1-r4)*0.10;
-
-                    // Feature score is a ranking score, not a probability.
-                    const raw =
-                        0.18*tr.p +
-                        0.18*p2 +
-                        0.12*p3 +
-                        0.07*p4 +
-                        0.15*f20 +
-                        0.10*f50 +
-                        0.08*f100 +
-                        0.05*f200 +
-                        0.04*Math.max(0,Math.min(0.30,0.10+momentum)) +
-                        0.03*Math.max(0,Math.min(0.30,0.10+acceleration));
-
-                    rows.push({
-                        digit:d,score:raw,
-                        f5,f20,f50,f100,f200,momentum,acceleration,
-                        transitionP:tr.p,transitionSupport:tr.support,
-                        ngram2P:p2,ngram2Support:n2.support,
-                        ngram3P:p3,ngram3Support:n3.support,
-                        ngram4P:p4,ngram4Support:n4.support,
-                        gap,avgGap,gapRatio,
-                        entropy20:e20,entropy50:e50,entropy100:e100,
-                        entropyTrend,mutualInformation:mi,runLength,
-                        priceDirection:market.direction,
-                        priceVolatility:market.volatility,
-                        meanTickInterval:market.meanInterval
-                    });
-                }
-
-                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
-                const scores=rows.map(r=>r.score);
-                const total=scores.reduce((s,x)=>s+x,0)||1;
-                rows.forEach(r=>r.scoreShare=r.score/total);
-
-                const top=rows[0], second=rows[1];
-                const margin=Math.max(0,(top?.scoreShare||0)-(second?.scoreShare||0));
-                const entropySignal=Math.max(0,1-e20);
-                const miSignal=Math.min(1,mi/0.10);
-                const marginSignal=Math.min(1,margin/0.025);
-                const contextSupport=Math.min(
-                    1,
-                    ((top?.transitionSupport||0)+(top?.ngram2Support||0)+(top?.ngram3Support||0))/60
-                );
-                const signalStrength=
-                    0.30*entropySignal+
-                    0.25*miSignal+
-                    0.30*marginSignal+
-                    0.15*contextSupport;
-
-                const snap={
-                    ready:true,historyN:n,symbol,
-                    entropy20:e20,entropy50:e50,entropy100:e100,
-                    entropyTrend,mutualInformation:mi,runLength,market,
-                    topDigit:top?.digit ?? null,
-                    topScore:top?.score ?? null,
-                    topShare:top?.scoreShare ?? null,
-                    secondShare:second?.scoreShare ?? null,
-                    margin,signalStrength,rows
-                };
-                this.lastSnapshot=snap;
-                this.render(snap);
-                return snap;
-            },
-
-            rowForDigit(digit) {
-                const s=this.lastSnapshot || this.analyze();
-                return s?.rows?.find(r=>Number(r.digit)===Number(digit)) || null;
-            },
-
-            ensurePanel() {
-                if(document.getElementById('digit-feature-panel')) return;
-                const ref=document.getElementById('digit-analysis-panel');
-                if(!ref || !ref.parentElement) return;
-
-                const panel=document.createElement('div');
-                panel.id='digit-feature-panel';
-                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-emerald-500/30 text-xs';
-                panel.innerHTML=`
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="font-bold text-emerald-300">🧬 DIGIT FEATURE ENGINE · SCORE AUTO</div>
-                    <button id="dfe-min-btn" type="button"
-                            onclick="toggleResearchPanel('dfe-min-body','dfe-min-btn','digit-feature')"
-                            class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
-                  </div>
-                  <div id="dfe-min-body">
-                    <div class="grid grid-cols-2 gap-x-2 gap-y-1">
-                      <span class="text-gray-400">History:</span><span id="dfe-history" class="font-bold text-white">warming</span>
-                      <span class="text-gray-400">Top feature digit:</span><span id="dfe-top" class="font-bold text-emerald-300">-</span>
-                      <span class="text-gray-400">Feature signal:</span><span id="dfe-signal" class="font-bold text-cyan-300">-</span>
-                      <span class="text-gray-400">Entropy 20/50/100:</span><span id="dfe-entropy" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Entropy trend:</span><span id="dfe-entropy-trend" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Lag-1 MI:</span><span id="dfe-mi" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Run length:</span><span id="dfe-run" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Tick interval:</span><span id="dfe-interval" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Price direction:</span><span id="dfe-direction" class="font-bold text-white">-</span>
-                      <span class="text-gray-400">Short volatility:</span><span id="dfe-volatility" class="font-bold text-white">-</span>
-                    </div>
-                    <div id="dfe-top3" class="mt-2 text-[11px] text-gray-300">Top features warming…</div>
-                    <div class="mt-2 text-[10px] text-gray-500">Ranking features only · no claim of predictive edge · INSTANT unchanged.</div>
-                  </div>
-                `;
-                ref.parentElement.appendChild(panel);
-                restoreResearchPanelState('dfe-min-body','dfe-min-btn','digit-feature');
-            },
-
-            render(s=null) {
-                if(typeof document==='undefined') return;
-                this.ensurePanel();
-                s=s||this.lastSnapshot;
-                if(!s) return;
-                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
-                set('dfe-history',`${s.historyN||0}${s.ready?' ✓':' · warming'}`);
-                set('dfe-top',s.ready?String(s.topDigit):'-');
-                set('dfe-signal',s.ready?`${(Number(s.signalStrength||0)*100).toFixed(1)}%`:'-');
-                set('dfe-entropy',`${Number(s.entropy20||0).toFixed(3)} / ${Number(s.entropy50||0).toFixed(3)} / ${Number(s.entropy100||0).toFixed(3)}`);
-                set('dfe-entropy-trend',`${Number(s.entropyTrend||0)>=0?'+':''}${Number(s.entropyTrend||0).toFixed(4)}`);
-                set('dfe-mi',`${Number(s.mutualInformation||0).toFixed(4)} bits`);
-                set('dfe-run',String(s.runLength||0));
-                set('dfe-interval',Number.isFinite(s.market?.meanInterval)?`${Number(s.market.meanInterval).toFixed(2)} s`:'-');
-                set('dfe-direction',Number.isFinite(s.market?.direction)?Number(s.market.direction).toFixed(3):'-');
-                set('dfe-volatility',Number.isFinite(s.market?.volatility)?Number(s.market.volatility).toFixed(5):'-');
-
-                const top3=document.getElementById('dfe-top3');
-                if(top3){
-                    if(!s.ready){
-                        top3.textContent='Top features warming…';
-                    } else {
-                        top3.innerHTML=s.rows.slice(0,3).map((r,i)=>
-                          `#${i+1} <b>${r.digit}</b> · F20 ${(r.f20*100).toFixed(1)}% · T ${(r.transitionP*100).toFixed(1)}% · `+
-                          `2g ${(r.ngram2P*100).toFixed(1)}% · 3g ${(r.ngram3P*100).toFixed(1)}% · 4g ${(r.ngram4P*100).toFixed(1)}% · gap ${r.gap}`
-                        ).join('<br>');
-                    }
-                }
-            }
-        };
-
-        // ============================================================================
-        // DIGITMATCHSTAR V52 — CRYPTANALYSIS-STYLE RANDOMNESS AUDITOR
-        // SCORE AUTO ONLY. INSTANT mode does not consult or wait for this auditor.
-        //
-        // This does NOT attempt to recover a secret RNG seed. It tests observable
-        // output structure: entropy, lag-1 mutual information, transition bias and
-        // 2-gram conditional bias, then blends those signals with the existing
-        // next-tick model for AI digit selection.
-        // ============================================================================
-        window.RANDOMNESS_AUDITOR_CONFIG = {
-            enabled: true,
-            minHistory: 120,
-            window: 600,
-            minNgramSupport: 5,
-            aiAssistSignal: 0.18,
-            aiAssistEdgeFloor: -0.040,   // -4.0 pp; explicitly experimental
-            weights: {
-                nextTick: 0.40,
-                ngram2: 0.25,
-                transition: 0.20,
-                recent: 0.15
-            }
-        };
-
-        window.randomnessAuditor = {
-            version: 'RA-1',
-            lastSnapshot: null,
-
-            clampP(x) {
-                x = Number(x);
-                return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0.10;
-            },
-
-            entropy(probs) {
-                let h = 0;
-                for (const p0 of probs) {
-                    const p = Number(p0);
-                    if (p > 0) h -= p * Math.log2(p);
-                }
-                return h;
-            },
-
-            normalizedEntropy(probs) {
-                return this.entropy(probs) / Math.log2(10);
-            },
-
-            distribution(digits) {
-                const counts = Array(10).fill(0);
-                for (const d of digits) {
-                    if (Number.isInteger(d) && d >= 0 && d <= 9) counts[d]++;
-                }
-                const n = digits.length || 1;
-                return counts.map(c => c / n);
-            },
-
-            transitionDistribution(digits) {
-                if (digits.length < 2) return { probs:Array(10).fill(0.10), support:0 };
-                const last = digits[digits.length - 1];
-                const counts = Array(10).fill(1); // Laplace smoothing
-                let support = 0;
-                for (let i = 0; i < digits.length - 1; i++) {
-                    if (digits[i] === last) {
-                        const next = digits[i + 1];
-                        if (Number.isInteger(next)) {
-                            counts[next]++;
-                            support++;
-                        }
-                    }
-                }
-                const total = counts.reduce((a,b)=>a+b,0);
-                return { probs: counts.map(c=>c/total), support };
-            },
-
-            ngram2Distribution(digits) {
-                if (digits.length < 3) return { probs:Array(10).fill(0.10), support:0 };
-                const a = digits[digits.length - 2];
-                const b = digits[digits.length - 1];
-                const counts = Array(10).fill(1); // Laplace smoothing
-                let support = 0;
-                for (let i = 0; i < digits.length - 2; i++) {
-                    if (digits[i] === a && digits[i + 1] === b) {
-                        const next = digits[i + 2];
-                        if (Number.isInteger(next)) {
-                            counts[next]++;
-                            support++;
-                        }
-                    }
-                }
-                const total = counts.reduce((x,y)=>x+y,0);
-                return { probs: counts.map(c=>c/total), support };
-            },
-
-            lag1MutualInformation(digits) {
-                if (digits.length < 30) return 0;
-                const joint = Array.from({length:10},()=>Array(10).fill(0));
-                const px = Array(10).fill(0);
-                const py = Array(10).fill(0);
-                let n = 0;
-
-                for (let i=0;i<digits.length-1;i++) {
-                    const x=digits[i], y=digits[i+1];
-                    if (!Number.isInteger(x) || !Number.isInteger(y)) continue;
-                    joint[x][y]++; px[x]++; py[y]++; n++;
-                }
-                if (!n) return 0;
-
-                let mi=0;
-                for (let x=0;x<10;x++) for (let y=0;y<10;y++) {
-                    const c=joint[x][y];
-                    if (!c) continue;
-                    const pxy=c/n, p1=px[x]/n, p2=py[y]/n;
-                    mi += pxy*Math.log2(pxy/(p1*p2));
-                }
-                return Math.max(0, mi);
-            },
-
-            analyze(symbol=null) {
-                const cfg=window.RANDOMNESS_AUDITOR_CONFIG;
-                const source=Array.isArray(window.lastDigits) ? window.lastDigits : [];
-                const digits=source
-                    .filter(d=>Number.isInteger(Number(d)) && Number(d)>=0 && Number(d)<=9)
-                    .map(Number)
-                    .slice(-cfg.window);
-
-                const n=digits.length;
-                if (n < cfg.minHistory) {
-                    const snap={
-                        ready:false, historyN:n, reason:'WARMING',
-                        topDigit:null, signalStrength:0,
-                        normalizedEntropy:null, mutualInformation:null,
-                        predictions:Array(10).fill(0.10)
-                    };
-                    this.lastSnapshot=snap;
-                    this.render(snap);
-                    return snap;
-                }
-
-                const recent=digits.slice(-100);
-                const recentP=this.distribution(recent);
-                const trans=this.transitionDistribution(digits);
-                const ng=this.ngram2Distribution(digits);
-                const globalP=this.distribution(digits);
-
-                const globalEntropy=this.normalizedEntropy(globalP);
-                const conditionalEntropy=this.normalizedEntropy(ng.probs);
-                const mi=this.lag1MutualInformation(digits);
-
-                const w=cfg.weights;
-                const rows=[];
-
-                for(let d=0;d<10;d++){
-                    let ntmP=0.10, ntmReady=false, ntmSupport=0;
-                    try{
-                        const m=window.nextTickModel?.getPrediction?.(
-                            symbol || window.nextTickModel?.getSymbol?.(),
-                            d
-                        );
-                        if(m){
-                            ntmP=this.clampP(m.probability);
-                            ntmReady=!!m.ready;
-                            ntmSupport=Number(m.effectiveSupport||0);
-                        }
-                    }catch(_){}
-
-                    // If a 2-gram is poorly supported, shrink it toward transition.
-                    const ngReliability=Math.min(1, ng.support / Math.max(cfg.minNgramSupport,1));
-                    const ngP=(ngReliability*ng.probs[d]) + ((1-ngReliability)*trans.probs[d]);
-
-                    const score=
-                        w.nextTick*ntmP +
-                        w.ngram2*ngP +
-                        w.transition*trans.probs[d] +
-                        w.recent*recentP[d];
-
-                    rows.push({
-                        digit:d, score, ntmP, ntmReady, ntmSupport,
-                        ngramP:ngP, ngramSupport:ng.support,
-                        transitionP:trans.probs[d], transitionSupport:trans.support,
-                        recentP:recentP[d]
-                    });
-                }
-
-                rows.sort((a,b)=>b.score-a.score || a.digit-b.digit);
-                const total=rows.reduce((s,r)=>s+r.score,0) || 1;
-                const probabilities=Array(10).fill(0);
-                rows.forEach(r=>{ probabilities[r.digit]=r.score/total; });
-
-                const top=rows[0];
-                const second=rows[1];
-                const topP=probabilities[top.digit];
-                const secondP=probabilities[second.digit];
-                const margin=Math.max(0,topP-secondP);
-
-                // "Signal strength" is a ranking-confidence diagnostic, not a
-                // calibrated win probability.
-                const entropySignal=Math.max(0,1-conditionalEntropy);
-                const marginSignal=Math.min(1, margin/0.03);
-                const miSignal=Math.min(1, mi/0.10);
-                const supportSignal=Math.min(1, (ng.support+trans.support)/40);
-                const signalStrength=
-                    0.35*entropySignal +
-                    0.30*marginSignal +
-                    0.20*miSignal +
-                    0.15*supportSignal;
-
-                const snap={
-                    ready:true,
-                    historyN:n,
-                    symbol:symbol || null,
-                    globalEntropy,
-                    normalizedEntropy:conditionalEntropy,
-                    mutualInformation:mi,
-                    transitionSupport:trans.support,
-                    ngramSupport:ng.support,
-                    topDigit:top.digit,
-                    topScore:top.score,
-                    topShare:topP,
-                    secondShare:secondP,
-                    margin,
-                    signalStrength,
-                    rows,
-                    predictions: probabilities
-                };
-
-                this.lastSnapshot=snap;
-                this.render(snap);
-                return snap;
-            },
-
-            supportsDigit(digit) {
-                const s=this.lastSnapshot || this.analyze();
-                return !!(
-                    s?.ready &&
-                    Number(s.topDigit)===Number(digit) &&
-                    Number(s.signalStrength||0) >= Number(window.RANDOMNESS_AUDITOR_CONFIG.aiAssistSignal||0)
-                );
-            },
-
-            ensurePanel() {
-                if (document.getElementById('randomness-auditor-panel')) return;
-                const anchor=document.getElementById('digit-analysis-panel');
-                if(!anchor || !anchor.parentElement) return;
-                const panel=document.createElement('div');
-                panel.id='randomness-auditor-panel';
-                panel.className='mt-3 p-3 bg-gray-800 rounded-lg border border-fuchsia-500/30 text-xs';
-                panel.innerHTML=`
-                    <div class="flex items-center justify-between mb-2">
-                      <div class="font-bold text-fuchsia-300">🔐 RANDOMNESS AUDITOR · SCORE AUTO</div>
-                      <button id="ra-min-btn" type="button"
-                              onclick="toggleResearchPanel('ra-min-body','ra-min-btn','randomness-auditor')"
-                              class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold">−</button>
-                    </div>
-                    <div id="ra-min-body" class="grid grid-cols-2 gap-x-2 gap-y-1">
-                        <span class="text-gray-400">History:</span><span id="ra-history" class="font-bold text-white">warming</span>
-                        <span class="text-gray-400">Conditional entropy:</span><span id="ra-entropy" class="font-bold text-white">-</span>
-                        <span class="text-gray-400">Lag-1 mutual info:</span><span id="ra-mi" class="font-bold text-white">-</span>
-                        <span class="text-gray-400">2-gram support:</span><span id="ra-ngram" class="font-bold text-white">-</span>
-                        <span class="text-gray-400">Auditor digit:</span><span id="ra-digit" class="font-bold text-fuchsia-300">-</span>
-                        <span class="text-gray-400">Signal strength:</span><span id="ra-signal" class="font-bold text-cyan-300">-</span>
-                        <span class="text-gray-400">Role:</span><span class="font-bold text-green-300">AI only · public feed single-source · INSTANT unchanged</span>
-                    </div>
-                `;
-                anchor.parentElement.appendChild(panel);
-                restoreResearchPanelState('ra-min-body','ra-min-btn','randomness-auditor');
-            },
-
-            render(snap=null) {
-                if(typeof document==='undefined') return;
-                this.ensurePanel();
-                const s=snap || this.lastSnapshot;
-                const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
-                if(!s){return;}
-                set('ra-history', `${s.historyN||0} ticks${s.ready?' ✓':' · warming'}`);
-                set('ra-entropy', s.ready ? `${Number(s.normalizedEntropy).toFixed(3)} / 1.000` : '-');
-                set('ra-mi', s.ready ? `${Number(s.mutualInformation).toFixed(4)} bits` : '-');
-                set('ra-ngram', s.ready ? String(s.ngramSupport||0) : '-');
-                set('ra-digit', s.ready ? String(s.topDigit) : '-');
-                set('ra-signal', s.ready ? `${(Number(s.signalStrength||0)*100).toFixed(1)}%` : '-');
-            }
-        };
-
-        // Engine State
-        window.digitIntelligenceEngine = {
-            enabled: true,
-            warmupDone: false,
-            warmupTicks: 0,
-            targetWarmupTicks: 200,
-            tickIndex: 0,
-            
-            // Data structures
-            digitStats: Array(10).fill().map(() => ({
-                gaps: [],
-                lastSeen: null,
-                currentGap: 0,
-
-                avgGap: 0,
-                p75Gap: 0,
-                p90Gap: 0,
-                maxGap: 0,
-
-                coldHistory: [],
-                longestColdStreak: 0,
-                avgColdDuration: 0,
-
-                persistenceScore: 0,
-                consecutiveExtendingGaps: 0,
-                lastGap: null,
-
-                isUnstable: false,
-                count: 0
-            })),
-            
-            // Regime detector
-            regime: {
-                window: 200,
-                digits: [],
-                counts: Array(10).fill(0)
-            },
-            
-            // Current recommendation
-            currentRecommendation: null,
-            
-            // Initialize engine
-            init: function() {
-                this.reset();
-                log('🧠 Digit Intelligence Engine initialized', 'ENGINE');
-            },
-            
-            // Reset engine
-            reset: function() {
-                this.warmupDone = false;
-                this.warmupTicks = 0;
-                this.tickIndex = 0;
-                this.currentRecommendation = null;
-                
-                this.digitStats = Array(10).fill().map(() => ({
-                    gaps: [],
-                    lastSeen: null,
-                    currentGap: 0,
-                    avgGap: 0,
-                    p75Gap: 0,
-                    p90Gap: 0,
-                    maxGap: 0,
-                    coldHistory: [],
-                    longestColdStreak: 0,
-                    avgColdDuration: 0,
-                    persistenceScore: 
