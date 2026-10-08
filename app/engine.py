@@ -28,6 +28,18 @@ class MultiUserEngine:
          for authoritative P/L/accounting/reconciliation.
       6. If the fast tick result disagrees with Deriv's eventual settlement,
          stop with RECONCILE_MISMATCH rather than silently continuing.
+
+    REAL MONEY SAFETY:
+      - `real_auto_trade` is a per-session opt-in flag.
+      - DEMO always proceeds unattended.
+      - REAL WITHOUT `real_auto_trade`:
+          * Every new entry parks in WAITING_REAL_CONFIRMATION and requires an
+            explicit POST /sessions/{id}/real/confirm before the buy is issued.
+          * Fast recovery is intentionally NOT executed unattended; the cycle
+            stops with REAL_RECOVERY_BLOCKED so a human re-authorises it.
+      - REAL WITH `real_auto_trade=True`:
+          * Buys proceed without per-trade confirmation, preserving the
+            low-latency recovery pipeline.
     """
 
     def __init__(self):
@@ -210,6 +222,86 @@ class MultiUserEngine:
 
             finally:
                 db.close()
+
+    # ========================================================================
+    # === REAL TRADING GATE =================================================
+    # ========================================================================
+    # Centralised check for whether a REAL purchase may proceed without an
+    # additional per-trade confirmation round-trip.
+    #
+    #   DEMO  -> always open (True)
+    #   REAL  -> open only when the session has opted into real_auto_trade
+    #
+    # The session flag is read defensively via getattr so the engine still
+    # runs against a database that has not yet been migrated.
+    # ========================================================================
+    @staticmethod
+    def _is_real_session(s) -> bool:
+        return str(getattr(s, "account_mode", "") or "").upper() == "REAL"
+
+    @staticmethod
+    def _real_auto_trade_enabled(s) -> bool:
+        return bool(getattr(s, "real_auto_trade", False))
+
+    def _real_gate_open(self, s) -> bool:
+        """
+        True  -> the engine may place the next REAL buy without further
+                 user confirmation (DEMO, or REAL with auto-trade ON).
+        False -> the engine must park and wait for an explicit
+                 /sessions/{id}/real/confirm before buying.
+        """
+        if not self._is_real_session(s):
+            return True
+        return self._real_auto_trade_enabled(s)
+
+    async def set_real_auto_trade(
+        self,
+        user_id: str,
+        session_id: int,
+        enabled: bool,
+    ) -> dict:
+        """
+        Toggle unattended REAL-money execution for a specific session.
+
+        Called by the frontend REAL AUTO-TRADE button. Enabling requires the
+        session to already be REAL; the caller (API layer) is responsible for
+        any additional authorization/audit logging.
+        """
+        db = SessionLocal()
+        try:
+            s = db.get(TradingSession, session_id)
+            if not s or str(s.user_id) != str(user_id):
+                raise RuntimeError("Trading session not found or unauthorized.")
+
+            if not self._is_real_session(s) and enabled:
+                raise RuntimeError(
+                    "REAL AUTO-TRADE can only be enabled on a REAL session."
+                )
+
+            try:
+                s.real_auto_trade = bool(enabled)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Database does not yet expose real_auto_trade; "
+                    "add the column to TradingSession."
+                ) from exc
+
+            # Disabling auto-trade clears any half-confirmed state so the next
+            # entry cleanly parks in WAITING_REAL_CONFIRMATION.
+            if not enabled and self._is_real_session(s):
+                s.pending_real_confirmation = False
+
+            s.phase = "REAL_AUTO_TRADE_ON" if enabled else "REAL_AUTO_TRADE_OFF"
+            s.updated_at = datetime.utcnow()
+            db.commit()
+
+            return {
+                "session_id": int(s.id),
+                "account_mode": str(s.account_mode),
+                "real_auto_trade": bool(enabled),
+            }
+        finally:
+            db.close()
 
     async def _currency_for(self, db, s) -> str:
         account = (
@@ -558,6 +650,38 @@ class MultiUserEngine:
                     db.commit()
                     return
 
+                # ============================================================
+                # === REAL TRADING GATE: recovery path ======================
+                # ============================================================
+                # Without real_auto_trade enabled, a REAL fast loss MUST NOT
+                # silently fire an unattended recovery buy. Stop the cycle
+                # with a dedicated phase so the UI can prompt the user.
+                # ============================================================
+                if (
+                    self._is_real_session(s)
+                    and not self._real_gate_open(s)
+                ):
+                    self.prefetched_recovery.pop(sid, None)
+
+                    prefetch_task = self.prefetch_tasks.pop(sid, None)
+                    if prefetch_task and not prefetch_task.done():
+                        prefetch_task.cancel()
+
+                    s.running = False
+                    s.paused = False
+                    s.phase = "REAL_RECOVERY_BLOCKED"
+                    s.last_error = (
+                        "REAL fast loss detected. Unattended recovery is "
+                        "disabled. Enable REAL AUTO-TRADE or restart the "
+                        "session and confirm the recovery trade manually."
+                    )
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    return
+                # ============================================================
+                # === END REAL TRADING GATE (recovery) ======================
+                # ============================================================
+
                 expected_trade_no = int(s.current_trade) + 1
                 expected_stake = round(
                     float(s.current_stake) * float(s.multiplier),
@@ -734,10 +858,37 @@ class MultiUserEngine:
                     db.commit()
                     return
 
-                if s.pending_real_confirmation:
+                # ============================================================
+                # === REAL TRADING GATE: entry path =========================
+                # ============================================================
+                # When the session is REAL and auto-trade is off, we park in
+                # WAITING_REAL_CONFIRMATION and require an explicit
+                # /sessions/{id}/real/confirm before proceeding to proposal.
+                # ============================================================
+                if (
+                    self._is_real_session(s)
+                    and not self._real_gate_open(s)
+                ):
+                    if not s.pending_real_confirmation:
+                        s.pending_real_confirmation = True
+                        s.phase = "WAITING_REAL_CONFIRMATION"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+
                     s.phase = "WAITING_REAL_CONFIRMATION"
+                    s.updated_at = datetime.utcnow()
                     db.commit()
                     return
+                # ============================================================
+                # === END REAL TRADING GATE (entry) =========================
+                # ============================================================
+
+                # Legacy safety: for REAL sessions with auto-trade enabled, a
+                # stale pending flag from a previous mode must not block us.
+                if self._real_gate_open(s) and s.pending_real_confirmation:
+                    s.pending_real_confirmation = False
+                    db.commit()
 
                 if s.current_trade >= s.max_trades:
                     s.running = False
@@ -841,6 +992,26 @@ class MultiUserEngine:
         if abs(float(row.current_stake or 0) - stake) > 0.005:
             db.rollback()
             return None
+
+        # ================================================================
+        # === REAL TRADING GATE: atomic re-check =========================
+        # ================================================================
+        # Guard against a race where auto-trade was disabled after the
+        # proposal was generated but before the claim was taken. If the
+        # session is REAL and the gate is closed, refuse the claim so the
+        # outer step() re-enters WAITING_REAL_CONFIRMATION.
+        # ================================================================
+        if (
+            self._is_real_session(row)
+            and not self._real_gate_open(row)
+            and not row.pending_real_confirmation
+        ):
+            row.phase = "WAITING_REAL_CONFIRMATION"
+            row.updated_at = datetime.utcnow()
+            row.pending_real_confirmation = True
+            db.commit()
+            return None
+        # ================================================================
 
         pending = self._pending_json(row.pending_trade_json)
 
@@ -1040,6 +1211,8 @@ class MultiUserEngine:
                     and int(purchase_t0_digit) == int(payload["digit"])
                 ),
                 "note": "T+0 is pre-purchase context only; not a contract result",
+                "account_mode": str(row.account_mode),
+                "real_auto_trade": self._real_auto_trade_enabled(row),
             },
             "fast_decision": None,
             "deriv_settlement": None,
@@ -1071,6 +1244,7 @@ class MultiUserEngine:
                         "buy_claim_token": claim["token"],
                         "claimed_trade_no": claim["trade_no"],
                         "prearmed": bool(prearmed),
+                        "real_auto_trade": self._real_auto_trade_enabled(row),
                     },
                 }),
             )
@@ -1686,6 +1860,7 @@ class MultiUserEngine:
                         "cycle_pnl": cycle_summary.get("cycle_pnl"),
                         "cycle_total_stake": cycle_summary.get("cycle_stake"),
                         "cycle_trade_count": cycle_summary.get("cycle_trades"),
+                        "account_mode": str(s.account_mode),
                     }
 
                     if (
@@ -1773,21 +1948,47 @@ class MultiUserEngine:
         value = self.last_settlement_by_sid.get(int(sid))
         return dict(value) if isinstance(value, dict) else None
 
+    # ========================================================================
+    # === REAL TRADING GATE: per-trade confirmation ==========================
+    # ========================================================================
     async def confirm_real(self, user_id: str, session_id: int):
-        """Confirms and enables live execution for a REAL account trading session."""
+        """
+        Confirms one REAL purchase.
+
+        Semantics depend on the session mode:
+          - DEMO                  : no-op success.
+          - REAL + auto-trade ON  : no-op success (already gate-open).
+          - REAL + auto-trade OFF : clears pending_real_confirmation so the
+                                    next step() can proceed to proposal/buy.
+
+        Callers should treat this as "clear the current gate once". It does
+        NOT permanently enable REAL execution.
+        """
         db = SessionLocal()
         try:
             s = db.get(TradingSession, session_id)
             if not s or str(s.user_id) != str(user_id):
                 raise RuntimeError("Trading session not found or unauthorized.")
-            
+
             s.pending_real_confirmation = False
-            s.phase = "REAL_CONFIRMED"
+
+            if self._is_real_session(s):
+                # Reflect the gate state in the phase so the UI can render it.
+                if self._real_auto_trade_enabled(s):
+                    s.phase = "REAL_AUTO_TRADE_ON"
+                else:
+                    s.phase = "REAL_CONFIRMED"
+            else:
+                s.phase = "REAL_CONFIRMED"
+
             s.updated_at = datetime.utcnow()
             db.commit()
             return True
         finally:
             db.close()
+    # ========================================================================
+    # === END REAL TRADING GATE ==============================================
+    # ========================================================================
 
 
 engine = MultiUserEngine()
