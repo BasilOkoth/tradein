@@ -1,0 +1,29 @@
+RENDER HEALTH-CHECK FIX
+
+The failed deploy was healthy at the process level. Render repeatedly called:
+
+  GET /api/state -> 404
+
+until the deployment timed out.
+
+Upload these two files to the current repository:
+
+REPLACE:
+  render.yaml
+  app/top4_main.py
+
+The fix:
+1. Explicitly sets healthCheckPath: /health in render.yaml.
+2. Adds /api/state as a compatibility endpoint returning HTTP 200.
+
+After uploading, trigger a new deployment.
+
+Also check Render:
+Settings -> Health Check Path
+
+It should show:
+  /health
+
+If the Render dashboard has a manually saved /api/state value, change it to
+/health. The compatibility route means the app will still survive if Render
+temporarily continues to call /api/state.

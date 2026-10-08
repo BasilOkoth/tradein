@@ -73,3 +73,25 @@ def top4_export(
         user_id=user_id,
         sid=sid,
     )
+
+
+# ---------------------------------------------------------------------------
+# RENDER / LEGACY HEALTH COMPATIBILITY
+# ---------------------------------------------------------------------------
+
+@app.get("/api/state")
+def legacy_api_state():
+    """
+    Backward-compatible health endpoint.
+
+    The previous simplified Top-4 service used /api/state as its Render health
+    check. Keeping this endpoint prevents an existing Render service setting
+    from marking the new full backend unhealthy during deployment.
+    """
+    return {
+        "ok": True,
+        "service": "digitmatchstar-top4-api",
+        "backend": "DigitMatchStar Production OAuth Backend",
+        "top4": True,
+        "health_endpoint": "/health",
+    }
