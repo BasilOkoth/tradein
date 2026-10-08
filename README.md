@@ -1,97 +1,166 @@
-# DigitMatchStar Top‑4 Ranked Basket
+# DigitMatchStar Top-4 Manual Basket
 
-A separate branch-ready teaching build for a four-leg Digit Match basket.
+This repository is the **full DigitMatchStar production backend plus the Top-4 manual basket layer**.
 
-## What it does
+It uses the existing secure OAuth/account/session architecture, PostgreSQL/SQLAlchemy models, encrypted Deriv credentials, server-side DigitScore ranking, Deriv WebSocket client, research tooling, and the existing DigitMatchStar frontend.
 
-- Reads a canonical Deriv tick stream.
-- Ranks digits 0–9.
-- Freezes ranks #1–#4 from one source epoch.
-- Splits a basket stake equally across four Digit Match legs.
-- In **DEMO** mode, requests four Deriv proposals and buys four DEMO contracts.
-- Uses the first future canonical tick as the teaching outcome and calculates basket P/L.
-- Sends Telegram OPEN/SETTLED messages when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured.
-- Exposes history and CSV export.
-- Includes a classroom-friendly dashboard.
+## Top-4 flow
 
-## REAL mode
+1. The server ranks digits 0–9 with the same DigitScore engine used by the main DigitMatchStar backend.
+2. **PREPARE TOP-4** freezes ranks #1, #2, #3 and #4 from one server score snapshot.
+3. The total basket stake is divided across the four ranked digits.
+4. Four Deriv proposals are requested.
+5. The user reviews the prepared basket.
+6. **APPROVE** or **REJECT** is required.
+7. In **DEMO**, approval can submit four DEMO Digit Match contracts.
+8. In **REAL**, this build records the manual approval/preview but does not transmit real-money BUY instructions.
 
-REAL mode is intentionally **signal/read-only** in this build. It shows the same top-4 basket and can connect to the live stream, but does not send real-money orders.
+There is no automatic next basket.
 
-## Economics example
+## Render deployment
 
-For a $10 basket:
+Use Python **3.11.11**.
 
-- 4 legs × $2.50 = $10 total.
-- If one winning $2.50 leg has a total return multiplier of 7.929:
-  - return = $2.50 × 7.929 = $19.8225
-  - basket net = $19.8225 − $10 = **+$9.8225**
-
-The running DEMO bot does not hard-code 7.929. It stores the actual payout returned by each Deriv proposal.
-
-## Run locally
+### Build Command
 
 ```bash
-python -m venv .venv
-# activate your virtual environment
-pip install -r requirements.txt
-cp .env.example .env
-# fill in DERIV_APP_ID + DEMO token
-uvicorn app.main:app --reload --port 8000
+pip install --upgrade pip && pip install -r requirements.txt
 ```
 
-Open `http://127.0.0.1:8000`.
+### Start Command
 
-## Telegram
-
-Create a Telegram bot with BotFather, then set:
-
-```env
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+```bash
+uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
 ```
 
-Messages are sent when a DEMO basket opens and settles, and when a REAL teaching signal is generated.
+### Health Check Path
 
-## Branch upload
+```text
+/health
+```
 
-Create a new branch such as:
+The repository also keeps a compatibility endpoint:
 
-`top4-ranked-basket`
+```text
+GET /api/state
+```
 
-and upload the contents of this ZIP to that branch. It is self-contained and does not need to overwrite your existing single-target branch.
+When `app.top4_main:app` is running, both `/health` and `/api/state` should return HTTP 200.
 
+## Required Render environment variables
 
-## Analytics and effectiveness export
+```text
+DATABASE_URL
+DERIV_CLIENT_ID
+DERIV_REDIRECT_URI
+TOKEN_ENCRYPTION_KEY
+PLATFORM_JWT_SECRET
+FRONTEND_URL
+```
 
-The dashboard includes:
+Recommended values:
 
-- Export History CSV
-- Export Analytics CSV
-- Export Analytics JSON
-- Top‑4 basket hit rate and miss rate
-- Rank #1, #2, #3 and #4 win counts
-- Total stake, total return, net P/L and ROI
-- Average profit per basket
-- Best and worst basket
-- Winning rank for every basket
-- Cumulative P/L per basket
-- Source epoch, Top‑4 digits, scores and outcome digit
+```text
+DERIV_SCOPE=trade
+PLATFORM_JWT_ALGORITHM=HS256
+TRUST_PLATFORM_USER_HEADER=false
+ALLOW_REAL_MODE=true
+PYTHON_VERSION=3.11.11
+```
 
-This lets you answer whether Top‑4 is actually effective, which ranks contribute most,
-whether ranks #3/#4 are worth funding, and whether changes improve forward results.
+Optional:
 
+```text
+DERIV_LEGACY_APP_ID
+TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID
+TELEGRAM_ADMIN_CHAT_ID
+```
 
-## Deploy on Render
+## Top-4 API routes
 
-Use **New → Blueprint** in Render and select this branch. `render.yaml` is included.
+```text
+GET  /sessions/{sid}/top4/status
+POST /sessions/{sid}/top4/prepare
+POST /sessions/{sid}/top4/approve
+POST /sessions/{sid}/top4/reject
+GET  /sessions/{sid}/top4/export
+```
 
-Secrets to enter:
-- DERIV_APP_ID
-- DERIV_TOKEN
-- TELEGRAM_BOT_TOKEN (optional)
-- TELEGRAM_CHAT_ID (optional)
+The normal DigitMatchStar OAuth, account, session and health routes remain available because `app.top4_main` imports the production FastAPI application from `app.main`.
 
-The start command is:
+## Python version
 
-`uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+The service is pinned to Python 3.11.11 because the current dependency set includes:
+
+```text
+pydantic==2.9.2
+pydantic-core==2.23.4
+```
+
+Python 3.11 uses prebuilt wheels for these dependencies. This avoids the failed Python 3.14 Rust/maturin source build seen on Render.
+
+The repository should contain:
+
+```text
+.python-version
+runtime.txt
+render.yaml
+```
+
+with Python 3.11.11 configured.
+
+## Architecture
+
+Active backend:
+
+```text
+app.main
+    ↓
+production OAuth/account/session backend
+
+app.top4_main
+    ↓
+imports app.main
+    +
+adds Top-4 manual basket routes
+    +
+adds /api/state compatibility endpoint
+```
+
+The Render service **must start `app.top4_main:app`**, not the old standalone `app.main:app` command.
+
+## Obsolete standalone instructions
+
+Older instructions referring to these are no longer valid for this repository:
+
+```text
+DERIV_APP_ID
+DERIV_TOKEN
+/api/history
+/api/analytics
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Those belonged to the earlier simplified standalone Top-4 prototype.
+
+## Deployment verification
+
+A successful Render deployment should show:
+
+```text
+Build successful
+GET /health HTTP/1.1 200 OK
+```
+
+or the compatibility health check:
+
+```text
+GET /api/state HTTP/1.1 200 OK
+```
+
+If `/api/state` returns 404, check the **actual Render service Start Command** and make sure it is:
+
+```bash
+uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+```
