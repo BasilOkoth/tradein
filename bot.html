@@ -671,7 +671,7 @@
     </div>
     <div>
       <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Basket stake</label>
-      <input id="serverTopNStake" type="number" min="0.01" step="0.01" value="1.00"
+      <input id="serverTopNStake" type="number" min="1.40" step="0.01" value="1.40"
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
     </div>
     <div class="flex items-end">
@@ -687,6 +687,31 @@
       </button>
     </div>
   </div>
+
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket Status</div>
+      <div id="serverTopNBasketStatus" class="text-sm font-black text-white">—</div>
+    </div>
+    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket Stake</div>
+      <div id="serverTopNBasketStake" class="text-sm font-black text-white">$0.00</div>
+    </div>
+    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket P/L</div>
+      <div id="serverTopNBasketPnl" class="text-sm font-black text-white">$0.00</div>
+    </div>
+    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Winning Ranks</div>
+      <div id="serverTopNWinners" class="text-sm font-black text-white">—</div>
+    </div>
+    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Top-N Session P/L</div>
+      <div id="serverTopNSessionPnl" class="text-sm font-black text-white">$0.00</div>
+    </div>
+  </div>
+
+  <div id="serverTopNLegs" class="mt-2 text-[10px] text-slate-300">No simultaneous basket yet.</div>
 
   <div id="serverTopNDetail" class="mt-2 text-[10px] text-slate-400">
     Uses the current DigitScore ranking and submits the selected Top-N contracts together.
@@ -12366,6 +12391,7 @@ function toggleServerContinuousResearch() {
 
                 renderServerExecutionState();
                 renderServerTopNReadiness();
+                await pollServerTopNResult();
                 } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {
@@ -12645,6 +12671,41 @@ function toggleServerContinuousResearch() {
         }
 
 
+        const SERVER_TOPN_MIN_LEG_STAKE = 0.35;
+
+        function serverTopNMinimumBasketStake(topN) {
+            const n = Math.max(1, Math.min(7, Math.trunc(Number(topN) || 1)));
+            return Number((n * SERVER_TOPN_MIN_LEG_STAKE).toFixed(2));
+        }
+
+        function syncServerTopNMinimumStake() {
+            const topNInput = document.getElementById('serverTopNCount');
+            const stakeInput = document.getElementById('serverTopNStake');
+
+            if (!topNInput || !stakeInput) return;
+
+            const topN = Math.max(
+                1,
+                Math.min(7, Math.trunc(Number(topNInput.value || 1)))
+            );
+
+            const minimum = serverTopNMinimumBasketStake(topN);
+            stakeInput.min = minimum.toFixed(2);
+
+            const current = Number(stakeInput.value || 0);
+            if (!Number.isFinite(current) || current < minimum) {
+                stakeInput.value = minimum.toFixed(2);
+            }
+
+            const detail = document.getElementById('serverTopNDetail');
+            if (detail) {
+                detail.textContent =
+                    `Top-${topN} minimum basket stake is $${minimum.toFixed(2)} ` +
+                    `($${SERVER_TOPN_MIN_LEG_STAKE.toFixed(2)} per contract).`;
+            }
+        }
+
+
         function serverTopNConfig() {
             const topN = Math.max(
                 1,
@@ -12662,8 +12723,18 @@ function toggleServerContinuousResearch() {
                 document.getElementById('serverTopNStake')?.value || 0
             );
 
-            if (!Number.isFinite(basketStake) || basketStake <= 0) {
-                throw new Error('Basket stake must be greater than 0.');
+            const minimumBasketStake =
+                serverTopNMinimumBasketStake(topN);
+
+            if (
+                !Number.isFinite(basketStake) ||
+                basketStake < minimumBasketStake
+            ) {
+                throw new Error(
+                    `Top-${topN} requires a basket stake of at least ` +
+                    `$${minimumBasketStake.toFixed(2)} ` +
+                    `($${SERVER_TOPN_MIN_LEG_STAKE.toFixed(2)} per contract).`
+                );
             }
 
             return {
@@ -12753,6 +12824,154 @@ function toggleServerContinuousResearch() {
             } catch (e) {
                 setServerTopNStatus('ERROR', e.message, 'bad');
                 log(`❌ Top-N warm-up failed: ${e.message}`, 'ERROR');
+            }
+        }
+
+
+
+        function formatSignedMoney(value) {
+            const n = Number(value || 0);
+            return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
+        }
+
+        function renderServerTopNResult(latest, cumulativePnl = null) {
+            const statusEl = document.getElementById('serverTopNBasketStatus');
+            const stakeEl = document.getElementById('serverTopNBasketStake');
+            const pnlEl = document.getElementById('serverTopNBasketPnl');
+            const winnersEl = document.getElementById('serverTopNWinners');
+            const sessionPnlEl = document.getElementById('serverTopNSessionPnl');
+            const legsEl = document.getElementById('serverTopNLegs');
+
+            if (!latest) {
+                if (statusEl) statusEl.textContent = '—';
+                if (stakeEl) stakeEl.textContent = '$0.00';
+                if (pnlEl) pnlEl.textContent = '$0.00';
+                if (winnersEl) winnersEl.textContent = '—';
+                if (legsEl) legsEl.textContent = 'No simultaneous basket yet.';
+                if (sessionPnlEl && cumulativePnl !== null) {
+                    sessionPnlEl.textContent = formatSignedMoney(cumulativePnl);
+                }
+                return;
+            }
+
+            const status = String(latest.status || 'OPEN').toUpperCase();
+            const totalStake = Number(
+                latest.basket_stake ??
+                (Array.isArray(latest.legs)
+                    ? latest.legs.reduce((s, leg) => s + Number(leg?.stake || 0), 0)
+                    : 0)
+            );
+
+            const netProfit = Number(
+                latest.net_profit ??
+                (Array.isArray(latest.legs)
+                    ? latest.legs.reduce((s, leg) => s + Number(leg?.profit || 0), 0)
+                    : 0)
+            );
+
+            const winners = Array.isArray(latest.winning_ranks)
+                ? latest.winning_ranks
+                : (Array.isArray(latest.legs)
+                    ? latest.legs
+                        .filter(leg => String(leg?.status || '').toUpperCase() === 'WIN')
+                        .map(leg => Number(leg?.rank))
+                        .filter(Number.isInteger)
+                    : []);
+
+            if (statusEl) statusEl.textContent = status;
+            if (stakeEl) stakeEl.textContent = `$${totalStake.toFixed(2)}`;
+            if (pnlEl) {
+                pnlEl.textContent = formatSignedMoney(netProfit);
+                pnlEl.className =
+                    'text-sm font-black ' +
+                    (netProfit > 0
+                        ? 'text-emerald-300'
+                        : netProfit < 0
+                            ? 'text-rose-300'
+                            : 'text-white');
+            }
+
+            if (winnersEl) {
+                winnersEl.textContent = winners.length
+                    ? winners.map(x => `#${x}`).join(', ')
+                    : (status === 'SETTLED' ? 'None' : 'Pending');
+            }
+
+            if (sessionPnlEl && cumulativePnl !== null) {
+                sessionPnlEl.textContent = formatSignedMoney(cumulativePnl);
+                sessionPnlEl.className =
+                    'text-sm font-black ' +
+                    (Number(cumulativePnl) > 0
+                        ? 'text-emerald-300'
+                        : Number(cumulativePnl) < 0
+                            ? 'text-rose-300'
+                            : 'text-white');
+            }
+
+            if (legsEl) {
+                const legs = Array.isArray(latest.legs) ? latest.legs : [];
+                if (!legs.length) {
+                    legsEl.textContent = 'Basket legs are not available yet.';
+                } else {
+                    legsEl.innerHTML = legs.map(leg => {
+                        const rank = Number(leg?.rank);
+                        const digit = Number(leg?.digit);
+                        const legStatus = String(leg?.status || 'OPEN').toUpperCase();
+                        const profit = Number(leg?.profit || 0);
+                        const stake = Number(leg?.stake || 0);
+
+                        return `
+                            <span class="inline-block mr-2 mb-1 rounded bg-slate-900/80 px-2 py-1">
+                                #${Number.isInteger(rank) ? rank : '—'}
+                                · D${Number.isInteger(digit) ? digit : '—'}
+                                · $${stake.toFixed(2)}
+                                · ${legStatus}
+                                ${['WIN','LOSS'].includes(legStatus) ? ` · ${formatSignedMoney(profit)}` : ''}
+                            </span>
+                        `;
+                    }).join('');
+                }
+            }
+        }
+
+        async function pollServerTopNResult() {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.enabled || !s?.sessionId) return;
+
+            try {
+                const statusPayload = await serverExecRequest(
+                    `/sessions/${s.sessionId}/top4/status`
+                );
+
+                let cumulativePnl = null;
+
+                // Export is persisted and lets the UI show cumulative Top-N P/L,
+                // even after multiple baskets have settled.
+                try {
+                    const exported = await serverExecRequest(
+                        `/sessions/${s.sessionId}/top4/export`
+                    );
+
+                    const baskets = Array.isArray(exported?.baskets)
+                        ? exported.baskets
+                        : [];
+
+                    cumulativePnl = baskets.reduce(
+                        (sum, basket) => sum + Number(basket?.net_profit || 0),
+                        0
+                    );
+                } catch (_) {}
+
+                const latest = statusPayload?.latest || null;
+                renderServerTopNResult(latest, cumulativePnl);
+
+                if (latest) {
+                    window.SERVER_EXECUTION.topNLatest = latest;
+                }
+
+            } catch (_) {
+                // Keep the main server poll resilient if the Top-N endpoint
+                // is temporarily unavailable.
             }
         }
 
@@ -12935,6 +13154,7 @@ function toggleServerContinuousResearch() {
                 );
 
                 await pollServerExecutionState();
+                await pollServerTopNResult();
                 renderServerTopNReadiness();
 
                 const legs = Array.isArray(result?.legs)
@@ -12961,6 +13181,15 @@ function toggleServerContinuousResearch() {
                     (digits.length ? ` · digits ${digits.join(',')}` : ''),
                     'SYSTEM'
                 );
+
+                // DigitMatch settles quickly, but the backend settlement task
+                // is asynchronous. Refresh the basket result a few times so
+                // P/L appears without requiring another user action.
+                [500, 1200, 2500, 5000].forEach(delay => {
+                    setTimeout(() => {
+                        pollServerTopNResult().catch(() => {});
+                    }, delay);
+                });
 
             } catch (e) {
                 const message = String(e?.message || e);
@@ -15065,6 +15294,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const stakeInput = document.getElementById('serverTopNStake');
 
     topNInput?.addEventListener('input', () => {
+        try { syncServerTopNMinimumStake(); } catch (_) {}
         try { renderServerTopNReadiness(); } catch (_) {}
     });
 
@@ -15073,6 +15303,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     setTimeout(() => {
+        try { syncServerTopNMinimumStake(); } catch (_) {}
         try { renderServerTopNReadiness(); } catch (_) {}
     }, 500);
 });
