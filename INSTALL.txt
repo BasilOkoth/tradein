@@ -1,34 +1,22 @@
-TOP-4 IMMEDIATE DEMO EXECUTION V2
+TradeIn Top-N One-Click REAL V6
 
-Replace these three files in the repository:
+Replace:
   app/top4_basket.py
   app/top4_main.py
+  app/deriv_ws.py
   top4-basket-ui.js
 
-What changed:
-- PREPARE removed.
-- APPROVE removed.
-- REJECT removed.
-- One button: EXECUTE TOP-4 NOW.
-- Server freezes a fresh Top-4 ranking at the instant the request arrives.
-- Four proposal->buy pipelines launch immediately.
-- DEMO only: orders are submitted.
-- REAL: fresh preview only; no real-money BUY is transmitted.
-- Settlement remains background-only.
-- Export remains available.
+REAL behavior:
+- Choose Top 1 through Top 7 and total stake.
+- Click START REAL TOP N.
+- That click is the explicit approval for ONE basket.
+- The server reads the freshest ranking inside that same request.
+- It immediately freezes ranks #1..#N and sends proposal/BUY for them.
+- There is no second confirmation dialog.
+- Every new REAL basket requires a new START click.
+- No background/unattended REAL auto-loop is enabled.
 
-Render settings do not change:
-  Start Command:
-    uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+Freshness flow:
+  START click -> fresh ranking -> freeze -> proposal -> BUY
 
-  Health Check Path:
-    /health
-
-Recommended test:
-1. Connect DEMO.
-2. Create/select a server session.
-3. Wait until four ranked digits are visible.
-4. Set basket stake.
-5. Click EXECUTE TOP-4 NOW once.
-6. Confirm status says 4/4 contracts opened.
-7. Export JSON after settlement and inspect source_epoch and contract IDs.
+DEMO remains configurable Top-N simultaneous.
