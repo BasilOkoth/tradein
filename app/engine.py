@@ -65,6 +65,11 @@ class MultiUserEngine:
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
+
+        # One explicit confirmation authorizes exactly one REAL-money BUY.
+        # The one-shot grant is consumed before Deriv is contacted.
+        self.real_confirmation_grants = set()
+
         # Identifies this server process in persisted execution evidence.
         # Useful for detecting overlapping Render instances during deploy/restart.
         self.instance_id = uuid.uuid4().hex[:12]
@@ -892,6 +897,32 @@ class MultiUserEngine:
         *,
         prearmed: bool,
     ):
+        # REAL execution is confirmation-gated at the actual BUY boundary.
+        # This covers the first trade and every recovery trade.
+        if str(s.account_mode or "").upper() == "REAL":
+            sid = int(s.id)
+
+            if sid not in self.real_confirmation_grants:
+                s.pending_real_confirmation = True
+                s.pending_trade_json = json.dumps({
+                    "kind": "REAL_CONFIRMATION_PENDING",
+                    "payload": payload,
+                    "prearmed": bool(prearmed),
+                    "created_at": datetime.utcnow().isoformat(),
+                })
+                s.phase = "WAITING_REAL_CONFIRMATION"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+                return False
+
+            # One explicit confirmation authorizes exactly one BUY.
+            # Consume the grant before contacting Deriv so it cannot be reused.
+            self.real_confirmation_grants.discard(sid)
+            s.pending_real_confirmation = False
+            s.updated_at = datetime.utcnow()
+            db.commit()
+
         claim = self._claim_buy(db, s.id, payload)
 
         if not claim:
@@ -1774,18 +1805,72 @@ class MultiUserEngine:
         return dict(value) if isinstance(value, dict) else None
 
     async def confirm_real(self, user_id: str, session_id: int):
-        """Confirms and enables live execution for a REAL account trading session."""
+        """Authorize and submit exactly one pending REAL-money purchase."""
         db = SessionLocal()
+
         try:
             s = db.get(TradingSession, session_id)
+
             if not s or str(s.user_id) != str(user_id):
-                raise RuntimeError("Trading session not found or unauthorized.")
-            
+                raise RuntimeError(
+                    "Trading session not found or unauthorized."
+                )
+
+            if str(s.account_mode or "").upper() != "REAL":
+                raise RuntimeError(
+                    "REAL confirmation is only valid for a REAL account."
+                )
+
+            pending = self._pending_json(s.pending_trade_json)
+
+            if (
+                not s.pending_real_confirmation
+                or pending.get("kind") != "REAL_CONFIRMATION_PENDING"
+                or not isinstance(pending.get("payload"), dict)
+            ):
+                raise RuntimeError(
+                    "There is no pending REAL purchase to confirm."
+                )
+
+            payload = dict(pending["payload"])
+            prearmed = bool(pending.get("prearmed"))
+
+            # Clear the persisted pending state before executing.
             s.pending_real_confirmation = False
+            s.pending_trade_json = None
             s.phase = "REAL_CONFIRMED"
+            s.last_error = None
             s.updated_at = datetime.utcnow()
             db.commit()
+
+            # The grant is intentionally one-shot.
+            self.real_confirmation_grants.add(int(session_id))
+
+            try:
+                client = await self._client(
+                    s.user_id,
+                    s.account_id,
+                )
+
+                submitted = await self._execute_buy(
+                    db,
+                    s,
+                    client,
+                    payload,
+                    prearmed=prearmed,
+                )
+
+                if not submitted:
+                    raise RuntimeError(
+                        "REAL purchase was not submitted."
+                    )
+
+            except Exception:
+                self.real_confirmation_grants.discard(int(session_id))
+                raise
+
             return True
+
         finally:
             db.close()
 

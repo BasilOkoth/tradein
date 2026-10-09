@@ -13501,14 +13501,17 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             if (wanted === 'real') {
-                // REAL OAuth/account selection is supported. Automated
-                // unattended live-money execution remains intentionally
-                // disabled by the backend in this build.
+                // REAL OAuth/account selection is supported. START may create
+                // and run the server session, but every real-money purchase
+                // is stopped at the backend BUY boundary until the user
+                // explicitly confirms that pending purchase.
                 sessionStorage.setItem('selectedAccountMode', 'REAL');
                 localStorage.setItem('selectedAccountMode', 'REAL');
-                throw new Error(
-                    `REAL account ${account.account_id} is connected successfully. ` +
-                    `Automated REAL-money execution is disabled in this build.`
+
+                log(
+                    `🔐 REAL account ${account.account_id} connected · ` +
+                    `each purchase requires confirmation`,
+                    'SYSTEM'
                 );
             }
 
