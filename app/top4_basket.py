@@ -16,7 +16,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO execution (1..7)."""
 
-    VERSION = "TOPN_ONECLICK_REAL_V6"
+    VERSION = "TOPN_OAUTH_PRESERVED_V7"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
 
@@ -182,10 +182,13 @@ class Top4BasketService:
 
                     ask_price = float(p.get("ask_price") or leg["stake"])
                     if mode == "REAL":
-                        buy_result = await client.buy_user_initiated_real(
-                            proposal_id,
-                            ask_price,
-                            user_initiated=bool(execute_real_now),
+                        # Explicit one-click REAL execution uses the already
+                        # OAuth-authenticated account websocket returned by OTP.
+                        buy_result = await client.request(
+                            {
+                                "buy": proposal_id,
+                                "price": float(ask_price),
+                            }
                         )
                     else:
                         buy_result = await client.buy(

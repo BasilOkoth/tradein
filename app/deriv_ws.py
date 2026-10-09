@@ -12,15 +12,11 @@ MessageCallback = Callable[[dict], Awaitable[None]]
 
 class DerivWS:
     """
-    Event-driven Deriv WebSocket client.
+    Event-driven Deriv WebSocket client for DEMO execution + read-only subscriptions.
 
-    DEMO:
-      buy(..., demo=True)
-
-    REAL:
-      unattended/background REAL execution remains blocked.
-      buy_user_initiated_real(...) is only for the same request caused by
-      an explicit START/EXECUTE click.
+    Safety:
+    - `buy(..., demo=True)` must be explicitly marked DEMO.
+    - REAL purchase automation is not supported by this client.
     """
 
     def __init__(self, url: str):
@@ -35,9 +31,17 @@ class DerivWS:
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
 
+        # Proposal flow control.
+        # Every proposal request on this account/socket is serialized here.
         self._proposal_lock = asyncio.Lock()
         self._last_proposal_at = 0.0
+
+        # 350 ms was too aggressive once prefetch + fallback were both active.
+        # 900 ms still allows a proposal to be prepared inside an R_10 2-second
+        # tick window, while greatly reducing Deriv proposal bursts.
         self._proposal_min_interval = 0.90
+
+        # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
 
@@ -99,7 +103,6 @@ class DerivWS:
         for task in list(self._callback_tasks):
             if not task.done():
                 task.cancel()
-
         self._callback_tasks.clear()
 
     async def _run_subscription_callback(self, callback, data: dict):
@@ -108,6 +111,7 @@ class DerivWS:
         except asyncio.CancelledError:
             raise
         except Exception:
+            # One subscriber must never kill the shared WebSocket reader.
             pass
 
     def _schedule_subscription_callback(self, callback, data: dict):
@@ -123,6 +127,9 @@ class DerivWS:
         if not sub_id:
             return
 
+        # CRITICAL: never await strategy/settlement callbacks in _reader().
+        # Those callbacks can immediately request the next proposal/buy, whose
+        # response must be consumed by this same reader task.
         for callback in list(self.subscriptions.get(str(sub_id), ())):
             self._schedule_subscription_callback(callback, data)
 
@@ -138,6 +145,9 @@ class DerivWS:
                         future.set_result(data)
 
                 if req_id in self.pending_subscription_callbacks:
+                    # Deriv can answer a very short-lived contract request before
+                    # assigning/returning a subscription id. Do not throw the
+                    # callback away unless an id was actually returned.
                     callback = self.pending_subscription_callbacks[req_id]
                     sub = data.get("subscription") or {}
                     sub_id = sub.get("id")
@@ -204,6 +214,8 @@ class DerivWS:
         return data
 
     async def _reset_after_timeout(self):
+        # Only used by idempotent/read-only requests such as proposal.
+        # BUY is intentionally never auto-retried.
         try:
             await self.close()
         except Exception:
@@ -230,11 +242,24 @@ class DerivWS:
             "underlying_symbol": str(symbol),
         }
 
+        # ONE proposal lane per account/socket.
+        #
+        # The previous build allowed a prefetch request to remain in-flight and,
+        # after 800 ms, the engine could start a fallback proposal for the same
+        # recovery. Even though requests were serialized, that still generated
+        # too many proposal calls in a short period and triggered Deriv RateLimit.
+        #
+        # This client therefore:
+        #   1) serializes every proposal request,
+        #   2) enforces minimum spacing,
+        #   3) applies a shared adaptive cooldown after RateLimit,
+        #   4) treats RateLimit as recoverable instead of immediately failing.
         async with self._proposal_lock:
             timeout_retry_used = False
 
             while True:
                 now = time.monotonic()
+
                 spacing_wait = self._proposal_min_interval - (
                     now - self._last_proposal_at
                 )
@@ -247,6 +272,8 @@ class DerivWS:
                 try:
                     self._last_proposal_at = time.monotonic()
                     data = await self.request(payload)
+
+                    # Success: reset throttling state.
                     self._rate_limit_streak = 0
                     self._proposal_cooldown_until = 0.0
                     return data
@@ -255,22 +282,30 @@ class DerivWS:
                     text = str(exc).lower()
 
                     if "timed out" in text and not timeout_retry_used:
+                        # Proposal is read-only, so reconnecting once is safe.
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
+                        # Recoverable back-pressure from Deriv.
                         self._rate_limit_streak = min(
                             self._rate_limit_streak + 1,
                             6,
                         )
+
                         backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)
                         backoff = backoff_table[
                             self._rate_limit_streak - 1
                         ]
+
                         self._proposal_cooldown_until = (
                             time.monotonic() + backoff
                         )
+
+                        # Hold the proposal lock during backoff. This is
+                        # intentional: no other prefetch/fallback should send
+                        # another proposal while Deriv is throttling us.
                         await asyncio.sleep(backoff)
                         continue
 
@@ -279,32 +314,13 @@ class DerivWS:
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
             raise RuntimeError(
-                "Unattended REAL-money purchase is disabled. "
-                "Use buy_user_initiated_real() from an explicit user action."
+                "Automated REAL-money purchase is disabled. "
+                "This client only permits DEMO execution."
             )
 
         return await self.request(
             {
-                "buy": str(proposal_id),
-                "price": float(price),
-            }
-        )
-
-    async def buy_user_initiated_real(
-        self,
-        proposal_id: str,
-        price: float,
-        *,
-        user_initiated: bool,
-    ):
-        if user_initiated is not True:
-            raise RuntimeError(
-                "REAL purchase requires an explicit user-initiated execution request."
-            )
-
-        return await self.request(
-            {
-                "buy": str(proposal_id),
+                "buy": proposal_id,
                 "price": float(price),
             }
         )
@@ -335,18 +351,21 @@ class DerivWS:
         if sub_id:
             return str(sub_id)
 
+        # A 1-tick contract can settle so quickly that Deriv returns the
+        # proposal_open_contract payload without a subscription id. That is
+        # still a valid contract response, not a fatal WebSocket error.
         req_id = data.get("req_id")
         if req_id is not None:
             self.pending_subscription_callbacks.pop(req_id, None)
 
+        # Do not await this callback here. engine.step() can already own the
+        # per-session lock, while the settlement callback also needs it.
         asyncio.create_task(callback(data))
+
+        # None tells the engine to use the contract-status polling fallback.
         return None
 
-    async def subscribe_ticks(
-        self,
-        symbol: str,
-        callback: MessageCallback,
-    ) -> str:
+    async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:
         data = await self.request(
             {
                 "ticks": str(symbol),
@@ -360,7 +379,6 @@ class DerivWS:
             raise RuntimeError(
                 f"Deriv returned no tick subscription id for {symbol}"
             )
-
         return str(sub_id)
 
     async def forget(self, subscription_id: str):

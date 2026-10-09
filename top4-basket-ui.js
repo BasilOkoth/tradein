@@ -208,15 +208,25 @@
       state.busy = true;
       render();
 
-      const result = await api(`/sessions/${sid}/top4/execute`, {
-        method: 'POST',
-        body: {
+      const mode = String(
+        sessionState()?.account_mode || 'DEMO'
+      ).toUpperCase();
+
+      const endpoint =
+        mode === 'REAL'
+          ? `/sessions/${sid}/top4/execute-real`
+          : `/sessions/${sid}/top4/execute`;
+
+      const result = await api(
+        endpoint,
+        {
+          method: 'POST',
+          body: {
             basket_stake: basketStake,
-            top_n: topN,
-            execute_real_now:
-              String(sessionState()?.account_mode || '').toUpperCase() === 'REAL'
+            top_n: topN
           }
-      });
+        }
+      );
 
       state.latest = result;
       const status = document.getElementById('top4-basket-status');

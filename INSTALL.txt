@@ -1,4 +1,4 @@
-TradeIn Top-N One-Click REAL V6
+TradeIn Top-N OAuth-Preserved V7
 
 Replace:
   app/top4_basket.py
@@ -6,17 +6,31 @@ Replace:
   app/deriv_ws.py
   top4-basket-ui.js
 
-REAL behavior:
-- Choose Top 1 through Top 7 and total stake.
-- Click START REAL TOP N.
-- That click is the explicit approval for ONE basket.
-- The server reads the freshest ranking inside that same request.
-- It immediately freezes ranks #1..#N and sends proposal/BUY for them.
-- There is no second confirmation dialog.
-- Every new REAL basket requires a new START click.
-- No background/unattended REAL auto-loop is enabled.
+DO NOT replace:
+  app/oauth.py
+  app/main.py
+  app/security.py
+  app/deriv_rest.py
+  app/config.py
+  index.html
 
-Freshness flow:
-  START click -> fresh ranking -> freeze -> proposal -> BUY
+OAuth remains the login path for BOTH DEMO and REAL:
 
-DEMO remains configurable Top-N simultaneous.
+  Connect DEMO / Connect REAL
+  -> /auth/deriv/start?mode=...
+  -> Deriv OAuth
+  -> /auth/deriv/callback
+  -> /auth/platform/exchange
+  -> /bot.html
+
+The raw Deriv token stays on the backend. The backend uses the encrypted OAuth
+token to request the Deriv account OTP/WebSocket URL.
+
+Top-N execution:
+  DEMO -> /sessions/{sid}/top4/execute
+  REAL -> /sessions/{sid}/top4/execute-real
+
+REAL remains one-click:
+  START REAL -> fresh server ranking -> freeze Top-N -> proposal -> BUY
+
+There is no second confirmation dialog and no unattended REAL loop.
