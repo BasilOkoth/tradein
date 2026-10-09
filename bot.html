@@ -656,6 +656,42 @@
 <div class="server-exec-card"><div class="server-exec-label">Trade</div><div class="server-exec-value" id="serverExecTrade">—</div></div>
 <div class="server-exec-card"><div class="server-exec-label">Server P/L</div><div class="server-exec-value" id="serverExecPnl">$0.00</div></div>
 </div>
+
+<div id="serverTopNPanel" class="mt-3 rounded-xl border border-violet-500/30 bg-slate-950/55 p-3">
+  <div class="flex flex-wrap items-center gap-2 mb-2">
+    <div class="text-[11px] font-black text-violet-300">⚡ SIMULTANEOUS TOP-N</div>
+    <span id="serverTopNStatus" class="edge-pill text-slate-300">READY</span>
+  </div>
+
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+    <div>
+      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Top N digits</label>
+      <input id="serverTopNCount" type="number" min="1" max="7" step="1" value="4"
+        class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
+    </div>
+    <div>
+      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Basket stake</label>
+      <input id="serverTopNStake" type="number" min="0.01" step="0.01" value="1.00"
+        class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
+    </div>
+    <div class="flex items-end">
+      <button id="serverTopNArmBtn" type="button" onclick="armServerTopNReal()"
+        class="server-exec-btn w-full bg-indigo-700 hover:bg-indigo-600">
+        Warm REAL Feed
+      </button>
+    </div>
+    <div class="flex items-end">
+      <button id="serverTopNExecuteBtn" type="button" onclick="executeServerTopN()"
+        class="server-exec-btn w-full bg-violet-700 hover:bg-violet-600">
+        Execute Simultaneous
+      </button>
+    </div>
+  </div>
+
+  <div id="serverTopNDetail" class="mt-2 text-[10px] text-slate-400">
+    Uses the current DigitScore ranking and submits the selected Top-N contracts together.
+  </div>
+</div>
 </div>
 <!-- MARTINGALE CALCULATOR -->
 <div class="mb-6 p-4 bg-gray-900 rounded-xl border border-purple-500/50 shadow-lg">
@@ -12608,6 +12644,213 @@ function toggleServerContinuousResearch() {
             renderServerExecutionState();
             log('☁ Server stopped NEW purchases; an already-open contract will reconcile to settlement.', 'SYSTEM');
         }
+
+
+        function serverTopNConfig() {
+            const topN = Math.max(
+                1,
+                Math.min(
+                    7,
+                    Math.trunc(
+                        Number(
+                            document.getElementById('serverTopNCount')?.value || 4
+                        )
+                    )
+                )
+            );
+
+            const basketStake = Number(
+                document.getElementById('serverTopNStake')?.value || 0
+            );
+
+            if (!Number.isFinite(basketStake) || basketStake <= 0) {
+                throw new Error('Basket stake must be greater than 0.');
+            }
+
+            return {
+                top_n: topN,
+                basket_stake: Number(basketStake.toFixed(2))
+            };
+        }
+
+        function setServerTopNStatus(label, detail = '', kind = 'normal') {
+            const badge = document.getElementById('serverTopNStatus');
+            const detailEl = document.getElementById('serverTopNDetail');
+
+            if (badge) {
+                badge.textContent = String(label || 'READY');
+                badge.className = 'edge-pill ' + (
+                    kind === 'good'
+                        ? 'text-emerald-300'
+                        : kind === 'bad'
+                            ? 'text-rose-300'
+                            : kind === 'warn'
+                                ? 'text-amber-300'
+                                : 'text-slate-300'
+                );
+            }
+
+            if (detailEl && detail) {
+                detailEl.textContent = detail;
+            }
+        }
+
+        async function armServerTopNReal() {
+            const s = window.SERVER_EXECUTION;
+
+            try {
+                if (!s?.enabled) {
+                    throw new Error('Enable Server mode first.');
+                }
+
+                if (!s.sessionId) {
+                    await pollServerExecutionState();
+                }
+
+                if (!s.sessionId) {
+                    throw new Error('No server session is selected.');
+                }
+
+                const mode = String(
+                    s.state?.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    ''
+                ).toUpperCase();
+
+                if (mode !== 'REAL') {
+                    setServerTopNStatus(
+                        'DEMO READY',
+                        'DEMO does not require REAL feed warming.',
+                        'good'
+                    );
+                    return;
+                }
+
+                setServerTopNStatus(
+                    'WARMING',
+                    'Connecting the REAL server tick feed. No purchase is sent.',
+                    'warn'
+                );
+
+                const result = await serverExecRequest(
+                    `/sessions/${s.sessionId}/top4/arm-real`,
+                    { method: 'POST' }
+                );
+
+                await pollServerExecutionState();
+
+                const have = Number(result?.history_count || 0);
+                const need = Number(result?.minimum_history || 10);
+
+                setServerTopNStatus(
+                    result?.topn_ready ? 'READY' : 'WARMING',
+                    result?.topn_ready
+                        ? `REAL Top-N ready · score history ${have}/${need}`
+                        : `REAL Top-N warming · score history ${have}/${need}`,
+                    result?.topn_ready ? 'good' : 'warn'
+                );
+
+            } catch (e) {
+                setServerTopNStatus('ERROR', e.message, 'bad');
+                log(`❌ Top-N warm-up failed: ${e.message}`, 'ERROR');
+            }
+        }
+
+        async function executeServerTopN() {
+            const s = window.SERVER_EXECUTION;
+
+            try {
+                if (!s?.enabled) {
+                    throw new Error('Enable Server mode first.');
+                }
+
+                if (!s.sessionId) {
+                    await pollServerExecutionState();
+                }
+
+                if (!s.sessionId) {
+                    throw new Error('No server session is selected.');
+                }
+
+                const cfg = serverTopNConfig();
+
+                const mode = String(
+                    s.state?.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    ''
+                ).toUpperCase();
+
+                let endpoint = `/sessions/${s.sessionId}/top4/execute`;
+
+                if (mode === 'REAL') {
+                    const ok = confirm(
+                        `Confirm REAL simultaneous Top-${cfg.top_n} DigitMatch basket?\n\n` +
+                        `Total basket stake: $${cfg.basket_stake.toFixed(2)}\n` +
+                        `This submits ${cfg.top_n} contracts together using the current ranked digits.`
+                    );
+
+                    if (!ok) {
+                        setServerTopNStatus(
+                            'CANCELLED',
+                            'REAL simultaneous purchase was not submitted.',
+                            'normal'
+                        );
+                        return;
+                    }
+
+                    endpoint = `/sessions/${s.sessionId}/top4/execute-real`;
+                }
+
+                setServerTopNStatus(
+                    'SUBMITTING',
+                    `Submitting Top-${cfg.top_n} basket · $${cfg.basket_stake.toFixed(2)} total`,
+                    'warn'
+                );
+
+                const result = await serverExecRequest(
+                    endpoint,
+                    {
+                        method: 'POST',
+                        body: cfg
+                    }
+                );
+
+                await pollServerExecutionState();
+
+                const legs = Array.isArray(result?.legs)
+                    ? result.legs
+                    : Array.isArray(result?.basket?.legs)
+                        ? result.basket.legs
+                        : [];
+
+                const digits = legs
+                    .map(x => Number(x?.digit))
+                    .filter(Number.isInteger);
+
+                setServerTopNStatus(
+                    'SUBMITTED',
+                    digits.length
+                        ? `Top-${cfg.top_n} submitted · digits ${digits.join(', ')}`
+                        : `Top-${cfg.top_n} simultaneous basket submitted`,
+                    'good'
+                );
+
+                log(
+                    `⚡ TOP-${cfg.top_n} SIMULTANEOUS ${mode || 'DEMO'} · ` +
+                    `$${cfg.basket_stake.toFixed(2)} total` +
+                    (digits.length ? ` · digits ${digits.join(',')}` : ''),
+                    'SYSTEM'
+                );
+
+            } catch (e) {
+                setServerTopNStatus('ERROR', e.message, 'bad');
+                log(`❌ Top-N simultaneous execution failed: ${e.message}`, 'ERROR');
+                alert(`Top-N execution failed: ${e.message}`);
+            }
+        }
+
 
         async function confirmServerRealTrade() {
             const s = window.SERVER_EXECUTION;
