@@ -6,8 +6,103 @@
 
   if (window.DMSTop4BasketUI) return;
 
-  const state = { latest: null, busy: false, pollTimer: null };
+  const state = {
+    latest: null,
+    busy: false,
+    pollTimer: null,
+    audioCtx: null,
+    lastSoundKey: null
+  };
   const money = n => `$${Number(n || 0).toFixed(2)}`;
+
+
+  function ensureAudio() {
+    try {
+      if (!state.audioCtx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) state.audioCtx = new AudioCtx();
+      }
+
+      if (state.audioCtx?.state === 'suspended') {
+        state.audioCtx.resume().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  function tone(freq, startOffset, duration, gain = 0.08) {
+    if (!state.audioCtx) return;
+
+    const ctx = state.audioCtx;
+    const osc = ctx.createOscillator();
+    const amp = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+
+    const start = ctx.currentTime + startOffset;
+    const end = start + duration;
+
+    amp.gain.setValueAtTime(0.0001, start);
+    amp.gain.exponentialRampToValueAtTime(gain, start + 0.015);
+    amp.gain.exponentialRampToValueAtTime(0.0001, end);
+
+    osc.connect(amp);
+    amp.connect(ctx.destination);
+
+    osc.start(start);
+    osc.stop(end + 0.02);
+  }
+
+  function playWinSound() {
+    ensureAudio();
+    if (!state.audioCtx) return;
+
+    tone(523.25, 0.00, 0.16, 0.07);
+    tone(659.25, 0.12, 0.16, 0.07);
+    tone(783.99, 0.24, 0.24, 0.08);
+  }
+
+  function playLossSound() {
+    ensureAudio();
+    if (!state.audioCtx) return;
+
+    tone(392.00, 0.00, 0.18, 0.07);
+    tone(293.66, 0.14, 0.24, 0.08);
+  }
+
+  function maybePlayPnlSound(latest, pnl) {
+    if (!latest) return;
+
+    const status = String(latest.status || '').toUpperCase();
+
+    if (
+      status !== 'SETTLED' &&
+      status !== 'REAL_SETTLED' &&
+      status !== 'SETTLEMENT_RECONCILE_REQUIRED'
+    ) {
+      return;
+    }
+
+    const basketId = String(
+      latest.basket_id ||
+      latest.triggered_at ||
+      'unknown'
+    );
+
+    const soundKey = `${basketId}:${status}:${Number(pnl).toFixed(2)}`;
+
+    if (state.lastSoundKey === soundKey) return;
+
+    if (Number(pnl) > 0) {
+      playWinSound();
+    } else if (Number(pnl) < 0) {
+      playLossSound();
+    } else {
+      return;
+    }
+
+    state.lastSoundKey = soundKey;
+  }
 
   function api(path, options = {}) {
     if (typeof window.serverExecRequest !== 'function') {
@@ -124,6 +219,8 @@
       <div class="mt-2 text-[10px] text-slate-400">
         DEMO freezes the selected Top-N and launches one contract per selected digit concurrently.
         REAL executes immediately from the same START/EXECUTE click.
+        Basket P/L turns bold green on profit and bold red on loss.
+        A win/loss sound plays once when the basket settles.
       </div>
     `;
 
@@ -183,14 +280,31 @@
 
     const pnl = Number(state.latest?.net_profit);
     const pnlEl = document.getElementById('top4-last-pnl');
+
     if (Number.isFinite(pnl)) {
       pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${money(pnl)}`;
+
+      if (pnl > 0) {
+        pnlEl.className =
+          'mt-1 text-xl font-black text-emerald-400 drop-shadow';
+      } else if (pnl < 0) {
+        pnlEl.className =
+          'mt-1 text-xl font-black text-red-500 drop-shadow';
+      } else {
+        pnlEl.className =
+          'mt-1 text-xl font-black text-slate-200';
+      }
+
+      maybePlayPnlSound(state.latest, pnl);
     } else {
       pnlEl.textContent = '—';
+      pnlEl.className =
+        'mt-1 text-xl font-black text-slate-200';
     }
   }
 
   async function executeNow() {
+    ensureAudio();
     const sid = sessionId();
     if (!sid || state.busy) return;
 
