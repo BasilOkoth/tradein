@@ -12365,9 +12365,8 @@ function toggleServerContinuousResearch() {
                 }
 
                 renderServerExecutionState();
-                
-
-            } catch (e) {
+                renderServerTopNReadiness();
+                } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {
                     badge.textContent = 'SERVER OFFLINE';
@@ -12757,6 +12756,84 @@ function toggleServerContinuousResearch() {
             }
         }
 
+
+        function getServerTopNReadiness() {
+            const s = window.SERVER_EXECUTION || {};
+            const st = s.state || {};
+            const score = st.digit_score || {};
+            const cfg = serverTopNConfig();
+
+            const ranking = Array.isArray(score.ranking)
+                ? score.ranking
+                : [];
+
+            const historyCount = Number(score.history_count || 0);
+            const minimumHistory = Number(score.minimum_history || 10);
+
+            const ready = (
+                score.ready === true &&
+                ranking.length >= cfg.top_n
+            );
+
+            return {
+                ready,
+                historyCount,
+                minimumHistory,
+                rankingCount: ranking.length,
+                topN: cfg.top_n
+            };
+        }
+
+        function renderServerTopNReadiness() {
+            const btn = document.getElementById('serverTopNExecuteBtn');
+            const armBtn = document.getElementById('serverTopNArmBtn');
+
+            let state;
+            try {
+                state = getServerTopNReadiness();
+            } catch (_) {
+                return;
+            }
+
+            const s = window.SERVER_EXECUTION || {};
+            const st = s.state || {};
+            const mode = String(
+                st.account_mode ||
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                ''
+            ).toUpperCase();
+
+            if (btn) {
+                btn.disabled = !state.ready;
+                btn.classList.toggle('opacity-50', !state.ready);
+                btn.classList.toggle('cursor-not-allowed', !state.ready);
+                btn.textContent = state.ready
+                    ? `Execute Top-${state.topN} Simultaneous`
+                    : `Warming ${state.historyCount}/${state.minimumHistory}`;
+            }
+
+            if (armBtn) {
+                armBtn.classList.toggle('hidden', mode !== 'REAL');
+            }
+
+            if (!state.ready) {
+                setServerTopNStatus(
+                    'WARMING',
+                    `DigitScore history ${state.historyCount}/${state.minimumHistory} · ` +
+                    `Top-${state.topN} execution unlocks automatically when ready.`,
+                    'warn'
+                );
+            } else {
+                setServerTopNStatus(
+                    'READY',
+                    `Top-${state.topN} ranking ready · ${state.rankingCount} ranked digits available.`,
+                    'good'
+                );
+            }
+        }
+
+
         async function executeServerTopN() {
             const s = window.SERVER_EXECUTION;
 
@@ -12782,13 +12859,53 @@ function toggleServerContinuousResearch() {
                     ''
                 ).toUpperCase();
 
+                let readiness = getServerTopNReadiness();
+
+                if (!readiness.ready && mode === 'REAL') {
+                    await armServerTopNReal();
+                    await pollServerExecutionState();
+
+                    readiness = getServerTopNReadiness();
+                    renderServerTopNReadiness();
+
+                    if (!readiness.ready) {
+                        setServerTopNStatus(
+                            'WARMING',
+                            `DigitScore is warming ${readiness.historyCount}/${readiness.minimumHistory}. ` +
+                            `No trade was submitted. Execute unlocks automatically when ready.`,
+                            'warn'
+                        );
+                        return;
+                    }
+                }
+
+                if (!readiness.ready) {
+                    renderServerTopNReadiness();
+                    setServerTopNStatus(
+                        'WARMING',
+                        `DigitScore is warming ${readiness.historyCount}/${readiness.minimumHistory}. ` +
+                        `No trade was submitted.`,
+                        'warn'
+                    );
+                    return;
+                }
+
                 let endpoint = `/sessions/${s.sessionId}/top4/execute`;
 
                 if (mode === 'REAL') {
+                    const ranking = Array.isArray(s.state?.digit_score?.ranking)
+                        ? s.state.digit_score.ranking.slice(0, cfg.top_n)
+                        : [];
+
+                    const digits = ranking
+                        .map(x => Number(x?.digit))
+                        .filter(Number.isInteger);
+
                     const ok = confirm(
                         `Confirm REAL simultaneous Top-${cfg.top_n} DigitMatch basket?\n\n` +
-                        `Total basket stake: $${cfg.basket_stake.toFixed(2)}\n` +
-                        `This submits ${cfg.top_n} contracts together using the current ranked digits.`
+                        `Current ranked digits: ${digits.length ? digits.join(', ') : 'Top-ranked digits'}\n` +
+                        `Total basket stake: $${cfg.basket_stake.toFixed(2)}\n\n` +
+                        `This confirmation applies to this basket only.`
                     );
 
                     if (!ok) {
@@ -12818,6 +12935,7 @@ function toggleServerContinuousResearch() {
                 );
 
                 await pollServerExecutionState();
+                renderServerTopNReadiness();
 
                 const legs = Array.isArray(result?.legs)
                     ? result.legs
@@ -12845,12 +12963,35 @@ function toggleServerContinuousResearch() {
                 );
 
             } catch (e) {
-                setServerTopNStatus('ERROR', e.message, 'bad');
-                log(`❌ Top-N simultaneous execution failed: ${e.message}`, 'ERROR');
-                alert(`Top-N execution failed: ${e.message}`);
+                const message = String(e?.message || e);
+
+                if (
+                    /DigitScore is still warming/i.test(message) ||
+                    /ranking is not ready/i.test(message)
+                ) {
+                    try { await pollServerExecutionState(); } catch (_) {}
+                    try { renderServerTopNReadiness(); } catch (_) {}
+
+                    let readiness = null;
+                    try {
+                        readiness = getServerTopNReadiness();
+                    } catch (_) {}
+
+                    setServerTopNStatus(
+                        'WARMING',
+                        readiness
+                            ? `DigitScore history ${readiness.historyCount}/${readiness.minimumHistory}. No trade was submitted.`
+                            : 'DigitScore is still warming. No trade was submitted.',
+                        'warn'
+                    );
+                    return;
+                }
+
+                setServerTopNStatus('ERROR', message, 'bad');
+                log(`❌ Top-N simultaneous execution failed: ${message}`, 'ERROR');
+                alert(`Top-N execution failed: ${message}`);
             }
         }
-
 
         async function confirmServerRealTrade() {
             const s = window.SERVER_EXECUTION;
@@ -14915,6 +15056,26 @@ window.isBotRunning = true;
         installBalanceRefreshButton();
     }
 })();
+</script>
+
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const topNInput = document.getElementById('serverTopNCount');
+    const stakeInput = document.getElementById('serverTopNStake');
+
+    topNInput?.addEventListener('input', () => {
+        try { renderServerTopNReadiness(); } catch (_) {}
+    });
+
+    stakeInput?.addEventListener('input', () => {
+        try { renderServerTopNReadiness(); } catch (_) {}
+    });
+
+    setTimeout(() => {
+        try { renderServerTopNReadiness(); } catch (_) {}
+    }, 500);
+});
 </script>
 
 </body>
