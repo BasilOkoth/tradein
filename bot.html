@@ -12082,17 +12082,39 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const stateEl = document.getElementById('score-engine-state');
             const rankingEl = document.getElementById('digit-score-ranking');
 
+            // Never coerce null/undefined to digit 0. In JavaScript,
+            // Number(null) === 0, which previously rendered a missing target
+            // as both "null" and "0" in this panel.
+            const rawCandidate = st?.candidate_digit;
+            const candidateTarget = (
+                rawCandidate !== null &&
+                rawCandidate !== undefined &&
+                rawCandidate !== '' &&
+                Number.isInteger(Number(rawCandidate))
+            ) ? Number(rawCandidate) : null;
+
+            const hasOpenContract = (
+                st?.open_contract_id !== null &&
+                st?.open_contract_id !== undefined &&
+                String(st.open_contract_id).trim() !== ''
+            );
+
+            const rawLiveNext = st?.live_next_target ?? score?.selected_digit;
+            const liveNextTarget = (
+                rawLiveNext !== null &&
+                rawLiveNext !== undefined &&
+                rawLiveNext !== '' &&
+                Number.isInteger(Number(rawLiveNext))
+            ) ? Number(rawLiveNext) : null;
+
             if (targetEl) {
-                targetEl.textContent = Number.isInteger(Number(st?.candidate_digit))
-                    ? String(st.candidate_digit)
+                targetEl.textContent = hasOpenContract && candidateTarget !== null
+                    ? String(candidateTarget)
                     : '—';
             }
             if (attemptEl) {
-                const liveNext = Number(
-                    st?.live_next_target ?? score?.selected_digit
-                );
-                attemptEl.textContent = Number.isInteger(liveNext)
-                    ? String(liveNext)
+                attemptEl.textContent = liveNextTarget !== null
+                    ? String(liveNextTarget)
                     : '—';
             }
             if (tradeEl) tradeEl.textContent = maxTrades ? `${currentTrade} / ${maxTrades}` : String(currentTrade || '—');
@@ -12112,7 +12134,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const selected = Number(score.selected_digit);
 
             const selectedRow = ranked.find(row => Number(row.digit) === selected) || ranked[0] || null;
-            const activeTarget = Number(st?.candidate_digit);
+            const activeTarget = hasOpenContract ? candidateTarget : null;
             const shadow = score?.shadow || {};
             const shadowSelected = Number(shadow?.selected_digit);
             const shadowRows = Array.isArray(shadow?.ranking) ? shadow.ranking : [];
@@ -12122,8 +12144,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 const margin = Number(score.top_margin);
                 const marginText = Number.isFinite(margin) ? ` · V1 margin ${margin.toFixed(3)}` : '';
                 stateEl.textContent =
-                    `OPEN ${Number.isInteger(activeTarget) ? activeTarget : '—'} · ` +
-                    `ACTIVE/NEXT ${Number.isInteger(Number(st?.live_next_target)) ? Number(st.live_next_target) : selected} · ` +
+                    `OPEN ${activeTarget !== null ? activeTarget : '—'} · ` +
+                    `ACTIVE/NEXT ${liveNextTarget !== null ? liveNextTarget : selected} · ` +
                     `V1 #1 ${selected}${marginText}`;
             }
 
@@ -12132,7 +12154,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             const velocityEl = document.getElementById('score-velocity');
             const triggerEl = document.getElementById('score-trigger');
 
-            if (strengthEl) strengthEl.textContent = Number.isInteger(activeTarget) ? String(activeTarget) : '—';
+            if (strengthEl) strengthEl.textContent = activeTarget !== null ? String(activeTarget) : '—';
             if (agreementEl) {
                 agreementEl.textContent = shadowRow
                     ? `${Number(shadowRow.signal_agreement || 0)}/${Number(shadowRow.signal_total || 7)}`
@@ -13501,19 +13523,13 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             if (wanted === 'real') {
-                // REAL OAuth/account selection is supported. START may create
-                // and run the server session, but every real-money purchase
-                // is stopped at the backend BUY boundary until the user
-                // explicitly confirms that pending purchase.
+                // REAL OAuth/account selection is supported. Automated
+                // unattended live-money execution remains intentionally
+                // disabled by the backend in this build.
                 sessionStorage.setItem('selectedAccountMode', 'REAL');
                 localStorage.setItem('selectedAccountMode', 'REAL');
-
-                log(
-                    `🔐 REAL account ${account.account_id} connected · ` +
-                    `each purchase requires confirmation`,
-                    'SYSTEM'
-                );
-            }
+                
+           }
 
             // FIRST inspect existing server sessions.
             // V34 may already have created a Trade-0 research session.
