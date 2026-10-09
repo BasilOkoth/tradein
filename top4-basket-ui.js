@@ -411,3 +411,291 @@
 
   window.DMSTop4BasketUI = { state, refreshStatus, executeNow };
 })();
+
+
+/*
+ * REAL START HOTFIX V9
+ *
+ * The core bot.html still contains an older REAL guard that throws before
+ * a server session is created. Replace that global start function after the
+ * main page has loaded.
+ *
+ * DEMO: unchanged; delegates to the original core implementation.
+ * REAL:
+ *   OAuth account -> create/reuse REAL session -> attach server tick stream
+ *   -> Top-N panel warms -> user can press START REAL TOP N.
+ *
+ * No single-target REAL worker is started here.
+ */
+(() => {
+  'use strict';
+
+  const originalStartServerExecutionSession =
+    window.startServerExecutionSession;
+
+  async function fixedStartServerExecutionSession() {
+    const s = window.SERVER_EXECUTION;
+
+    if (!s?.enabled) return false;
+
+    if (!s.apiUrl) {
+      throw new Error(
+        'Configure the server execution backend URL first.'
+      );
+    }
+
+    const cfg =
+      typeof window.serverSessionConfigFromUi === 'function'
+        ? window.serverSessionConfigFromUi()
+        : {
+            requested_mode:
+              sessionStorage.getItem('selectedAccountMode') ||
+              localStorage.getItem('selectedAccountMode') ||
+              'DEMO',
+            symbol:
+              document.getElementById('symbol')?.value ||
+              'R_10',
+            base_stake:
+              Number(
+                document.getElementById('baseStake')?.value
+                || 1
+              ),
+            multiplier:
+              Number(
+                document.getElementById('multiplier')?.value
+                || 1.15
+              ),
+            max_trades:
+              Number(
+                document.getElementById('maxTrades')?.value
+                || 20
+              )
+          };
+
+    const wanted = String(
+      cfg.requested_mode || 'DEMO'
+    ).toLowerCase();
+
+    // Preserve all existing DEMO behavior.
+    if (wanted !== 'real') {
+      if (
+        typeof originalStartServerExecutionSession
+        !== 'function'
+      ) {
+        throw new Error(
+          'Original DEMO server start function is unavailable.'
+        );
+      }
+
+      return await originalStartServerExecutionSession();
+    }
+
+    const request =
+      typeof window.serverExecRequest === 'function'
+        ? window.serverExecRequest
+        : null;
+
+    if (!request) {
+      throw new Error(
+        'Server execution request helper is unavailable.'
+      );
+    }
+
+    const accounts = await request(
+      '/auth/platform/me'
+    );
+
+    const account = (
+      accounts.accounts || []
+    ).find(
+      a =>
+        String(
+          a.account_type || ''
+        ).toLowerCase()
+        === 'real'
+    );
+
+    if (!account) {
+      throw new Error(
+        'No REAL Deriv Options account is connected through OAuth.'
+      );
+    }
+
+    sessionStorage.setItem(
+      'selectedAccountMode',
+      'REAL'
+    );
+
+    try {
+      localStorage.setItem(
+        'selectedAccountMode',
+        'REAL'
+      );
+    } catch (_) {}
+
+    // Do not reuse a stale DEMO session.
+    let rows = await request('/sessions');
+
+    let existing = (
+      rows || []
+    ).find(
+      row =>
+        String(
+          row.account_id
+        )
+        === String(
+          account.account_id
+        )
+    ) || null;
+
+    let created = existing;
+
+    if (!existing) {
+      created = await request(
+        '/sessions',
+        {
+          method: 'POST',
+          body: {
+            account_id:
+              account.account_id,
+            symbol:
+              cfg.symbol,
+            base_stake:
+              Number(
+                cfg.base_stake
+                || 1
+              ),
+            multiplier:
+              Number(
+                cfg.multiplier
+                || 1.15
+              ),
+            max_trades:
+              Number(
+                cfg.max_trades
+                || 20
+              )
+          }
+        }
+      );
+    } else if (
+      String(
+        existing.symbol || ''
+      )
+      !== String(
+        cfg.symbol || ''
+      )
+    ) {
+      created = await request(
+        '/sessions',
+        {
+          method: 'POST',
+          body: {
+            account_id:
+              account.account_id,
+            symbol:
+              cfg.symbol,
+            base_stake:
+              Number(
+                cfg.base_stake
+                || 1
+              ),
+            multiplier:
+              Number(
+                cfg.multiplier
+                || 1.15
+              ),
+            max_trades:
+              Number(
+                cfg.max_trades
+                || 20
+              )
+          }
+        }
+      );
+    }
+
+    s.sessionId = Number(
+      created.id
+    );
+
+    sessionStorage.setItem(
+      'dms_server_session_id',
+      String(
+        s.sessionId
+      )
+    );
+
+    try {
+      localStorage.setItem(
+        'dms_server_session_id',
+        String(
+          s.sessionId
+        )
+      );
+    } catch (_) {}
+
+    const armed = await request(
+      `/sessions/${s.sessionId}/top4/arm-real`,
+      {
+        method: 'POST'
+      }
+    );
+
+    // Refresh the shared SERVER_EXECUTION state so the Top-N UI gets:
+    //   Mode REAL
+    //   server canonical ticks
+    //   live DigitScore warming/ranking
+    if (
+      typeof window.pollServerExecutionState
+      === 'function'
+    ) {
+      await window.pollServerExecutionState();
+    }
+
+    if (
+      typeof window.renderServerExecutionState
+      === 'function'
+    ) {
+      window.renderServerExecutionState();
+    }
+
+    if (
+      typeof window.ensureServerExecutionPolling
+      === 'function'
+    ) {
+      window.ensureServerExecutionPolling();
+    }
+
+    try {
+      window.log?.(
+        `☁ REAL TOP-N READY · OAuth account ${account.account_id} · ` +
+        `server score ${Number(armed.history_count || 0)}/` +
+        `${Number(armed.minimum_history || 10)} · ` +
+        `press START REAL TOP-N when ranking is ready`,
+        'SYSTEM'
+      );
+    } catch (_) {}
+
+    return true;
+  }
+
+  window.startServerExecutionSession =
+    fixedStartServerExecutionSession;
+
+  // Classic-script global function declarations are window properties,
+  // but explicitly update the binding too when the browser permits it.
+  try {
+    startServerExecutionSession =
+      fixedStartServerExecutionSession;
+  } catch (_) {}
+
+  window.DMS_REAL_START_FIX_V9 = {
+    active: true,
+    original:
+      originalStartServerExecutionSession,
+    fixed:
+      fixedStartServerExecutionSession
+  };
+})();
+

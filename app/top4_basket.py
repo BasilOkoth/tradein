@@ -16,7 +16,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO execution (1..7)."""
 
-    VERSION = "TOPN_OAUTH_PRESERVED_V7"
+    VERSION = "TOPN_REAL_START_FIX_V9"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
 
@@ -99,6 +99,95 @@ class Top4BasketService:
                 )
         except Exception:
             pass
+
+
+    async def arm_real(self, *, user_id, sid):
+        """
+        Prepare the OAuth-authenticated REAL session for Top-N use without
+        starting the old single-target worker.
+
+        This attaches the server canonical tick stream so DigitScore can warm.
+        No proposal or BUY is sent here.
+        """
+        async with self._locks[int(sid)]:
+            db = SessionLocal()
+
+            try:
+                s = self._owned_session(
+                    db,
+                    user_id,
+                    sid,
+                )
+
+                mode = str(
+                    s.account_mode
+                    or ""
+                ).upper()
+
+                if mode != "REAL":
+                    raise HTTPException(
+                        409,
+                        "This session is not a REAL account.",
+                    )
+
+                client = await engine._client(
+                    s.user_id,
+                    s.account_id,
+                )
+
+                await engine._ensure_tick_subscription(
+                    sid=s.id,
+                    user_id=s.user_id,
+                    account_id=s.account_id,
+                    symbol=s.symbol,
+                    client=client,
+                )
+
+                # Keep the legacy single-target worker OFF.
+                # Top-N REAL execution is owned only by /top4/execute-real.
+                s.running = False
+                s.paused = False
+                s.pending_real_confirmation = False
+                s.phase = "TOPN_REAL_WARMING"
+                s.last_error = None
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                score = engine._score_all_digits(
+                    s.id
+                )
+
+                return {
+                    "ok": True,
+                    "session_id": s.id,
+                    "account_id": s.account_id,
+                    "account_mode": mode,
+                    "symbol": s.symbol,
+                    "phase": s.phase,
+                    "digit_score": score,
+                    "topn_ready": bool(
+                        score.get("ready")
+                    ),
+                    "history_count": int(
+                        score.get(
+                            "history_count"
+                        )
+                        or 0
+                    ),
+                    "minimum_history": int(
+                        score.get(
+                            "minimum_history"
+                        )
+                        or 10
+                    ),
+                    "message": (
+                        "REAL Top-N server feed armed. "
+                        "No trade has been sent."
+                    ),
+                }
+
+            finally:
+                db.close()
 
     async def execute_now(self, *, user_id, sid, basket_stake, top_n=7, execute_real_now=False):
         top_n = self._validate_top_n(top_n)

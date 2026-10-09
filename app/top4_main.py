@@ -37,6 +37,17 @@ async def topn_execute_demo(
     )
 
 
+@app.post("/sessions/{sid}/top4/arm-real")
+async def topn_arm_real(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    return await top4_baskets.arm_real(
+        user_id=user_id,
+        sid=sid,
+    )
+
+
 @app.post("/sessions/{sid}/top4/execute-real")
 async def topn_execute_real(
     sid: int,
@@ -69,7 +80,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "SIMULTANEOUS_OAUTH_PRESERVED",
+        "topn_mode": "SIMULTANEOUS_REAL_START_FIXED",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,

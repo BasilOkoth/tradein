@@ -1,19 +1,42 @@
-TradeIn Top-N P/L + Sound V8
+TradeIn REAL START Fix V9
 
-Replace only:
+Replace:
+  app/top4_basket.py
+  app/top4_main.py
   top4-basket-ui.js
 
-Changes:
-- Positive Last basket P/L = bold GREEN.
-- Negative Last basket P/L = bold RED.
-- Zero P/L = neutral.
-- Winning basket plays a short rising chime once.
-- Losing basket plays a short descending tone once.
-- Sound is generated in the browser with Web Audio; no audio file is required.
-- Audio is unlocked by the user's EXECUTE / START click so settlement sounds can play later.
+Do NOT replace OAuth files:
+  app/oauth.py
+  app/main.py
+  app/security.py
+  app/deriv_rest.py
+  index.html
 
-Preserved:
-- OAuth login for DEMO and REAL.
-- Configurable Top 1–7.
-- Simultaneous execution.
-- Separate DEMO and REAL Top-N endpoints.
+WHAT THIS FIXES
+
+The existing bot.html contains an old guard:
+
+  if (wanted === 'real') { ... throw new Error(...) }
+
+That guard prevents START BOT from even creating/attaching the REAL server
+session.
+
+V9 overrides that old global start function after bot.html loads.
+
+REAL flow becomes:
+
+  OAuth REAL login
+  -> START BOT
+  -> create/reuse OAuth REAL server session
+  -> attach server canonical tick stream
+  -> DigitScore warms
+  -> Top-N panel shows Mode REAL
+  -> press START REAL TOP N
+  -> /top4/execute-real sends exactly one simultaneous basket
+
+Important:
+- START BOT no longer throws "Automated REAL-money execution is disabled".
+- It does NOT start the old single-target REAL worker.
+- The actual real-money basket is still the explicit START REAL TOP-N button.
+- DEMO START BOT behavior is untouched.
+- OAuth remains untouched.
