@@ -12542,9 +12542,14 @@ function toggleServerContinuousResearch() {
                 }
 
                 renderServerExecutionState();
-                renderServerTopNReadiness();
+
+                // First make sure the Top-4 score feed is current, then render
+                // the button from the freshest state in the same poll.
                 await ensureServerTopNFeedWarm();
                 await pollServerTopNResult();
+
+                refreshTop4CapitalPlan();
+                renderServerTopNReadiness();
                 } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
                 if (badge) {
@@ -12554,11 +12559,35 @@ function toggleServerContinuousResearch() {
             }
         }
 
+        function forceTop4ButtonRefresh() {
+            try {
+                refreshTop4CapitalPlan();
+                renderServerTopNReadiness();
+            } catch (_) {}
+        }
+
+
         function ensureServerExecutionPolling() {
             const s = window.SERVER_EXECUTION;
+
             if (s.pollTimer) clearInterval(s.pollTimer);
-            s.pollTimer = setInterval(pollServerExecutionState, 750);
+            if (s.top4UiTimer) clearInterval(s.top4UiTimer);
+
+            s.pollTimer = setInterval(
+                pollServerExecutionState,
+                750
+            );
+
+            // This timer performs no network request. It only re-evaluates
+            // button/readiness state so DOM timing cannot leave Start Top-4
+            // disabled after the server has already become ready.
+            s.top4UiTimer = setInterval(
+                forceTop4ButtonRefresh,
+                500
+            );
+
             pollServerExecutionState();
+            forceTop4ButtonRefresh();
         }
 
         function configureServerExecutionUrl() {
@@ -12968,6 +12997,31 @@ function toggleServerContinuousResearch() {
                     `/sessions/${s.sessionId}/top4/arm`,
                     { method: 'POST' }
                 );
+
+                // V25: /top4/arm is authoritative. Apply its fresh DigitScore
+                // immediately instead of waiting for /sessions or a page refresh.
+                if (!s.state) s.state = {};
+
+                if (result?.digit_score) {
+                    s.state.digit_score = result.digit_score;
+                }
+
+                if (result?.account_mode) {
+                    s.state.account_mode = result.account_mode;
+                }
+
+                if (result?.symbol) {
+                    s.state.symbol = result.symbol;
+                }
+
+                // Force capital/readiness caches to re-evaluate against the
+                // newly warmed server state.
+                s.top4CapitalRefreshKey = null;
+                s.top4CapitalRenderSignature = null;
+
+                try { refreshTop4CapitalPlan(); } catch (_) {}
+                try { renderServerTopNReadiness(); } catch (_) {}
+
 
                 // Prevent repeated arm calls while the same feed is warming.
                 s.topNWarmArmedAt = Date.now();
@@ -13428,6 +13482,11 @@ function toggleServerContinuousResearch() {
             });
 
             if (window.SERVER_EXECUTION?.top4CapitalRenderSignature === signature) {
+                // Content has not changed, but readiness may have. Do not skip
+                // the logical capital state needed to unlock the Start button.
+                const sufficient = balance >= required && required > 0;
+                window.SERVER_EXECUTION.top4CapitalPlan = plan;
+                window.SERVER_EXECUTION.top4CapitalSufficient = sufficient;
                 return;
             }
             window.SERVER_EXECUTION.top4CapitalRenderSignature = signature;
@@ -13498,6 +13557,9 @@ function toggleServerContinuousResearch() {
             const key = `${raw.toFixed(2)}|${balance.toFixed(2)}`;
 
             if (window.SERVER_EXECUTION?.top4CapitalRefreshKey === key) {
+                // Stake/balance are unchanged, but server readiness may have
+                // changed. Preserve the cached plan and let readiness renderer
+                // decide whether the button should unlock.
                 return;
             }
 
@@ -14271,7 +14333,17 @@ function toggleServerContinuousResearch() {
             s.topNWarmArmedAt = Date.now();
 
             try {
-                await armServerTopNFeed({ silent: true });
+                const armed = await armServerTopNFeed({ silent: true });
+
+                if (armed?.digit_score) {
+                    if (!s.state) s.state = {};
+                    s.state.digit_score = armed.digit_score;
+                }
+
+                // Do not wait for another polling cycle. Unlock immediately.
+                refreshTop4CapitalPlan();
+                renderServerTopNReadiness();
+
             } catch (_) {}
         }
 
@@ -14366,7 +14438,7 @@ function toggleServerContinuousResearch() {
                 } else {
                     setServerTopNStatus(
                         'READY',
-                        `Top-${state.topN} ranking ready · ${state.rankingCount} ranked digits available.`,
+                        `Top-${state.topN} ranking ready · ${state.rankingCount} ranked digits available · Start unlocked.`,
                         'good'
                     );
                 }

@@ -1,23 +1,28 @@
-TRADEIN FAST TOP-4 PIPELINE V23
+TRADEIN TOP-4 SELF-REFRESH V25
 
-Performance changes:
-- Top-4 no longer uses the normal 900ms proposal lane four times.
-- A dedicated Top-N proposal batch lane uses controlled 450ms spacing.
-- If Deriv returns RateLimit, the batch falls back to conservative 900ms spacing.
-- Exactly one proposal request is made per intended leg; no duplicate fallback storm.
-- All 4 proposals are prepared BEFORE buys.
-- Once all four valid proposals exist, all four BUY requests launch concurrently.
-- This makes the actual contract openings much more synchronized.
-- A proposal-preparation failure aborts before knowingly opening a partial basket.
-- V22 REAL guided confirmation and V21 stable UI are retained.
+Fixes Start Top-4 remaining disabled until manual browser refresh.
 
-Files to replace:
+Root cause:
+- /top4/arm could return a fresh READY DigitScore.
+- The frontend did not copy that returned digit_score into SERVER_EXECUTION.state.
+- Start Top-4 kept reading stale state until another full refresh/state cycle.
+
+V25:
+- arm response is applied immediately to live browser state.
+- readiness is rendered immediately after arm.
+- server polling warms first, then renders button from fresh state.
+- capital/readiness caches are invalidated after a fresh arm.
+- a lightweight 500ms UI-only refresh re-evaluates the button without extra network calls.
+- Start Top-4 unlocks as soon as:
+    score.ready == true
+    ranking has >= 4 digits
+    capital is sufficient
+    no Top-4 execution is currently in flight
+
+No manual page refresh should be required.
+
+Replace:
   /bot.html
   /app/top4_basket.py
   /app/top4_main.py
   /app/deriv_ws.py
-
-Expected proposal preparation cadence for Top-4:
-  old: approx 0.0s, 0.9s, 1.8s, 2.7s
-  V23: approx 0.0s, 0.45s, 0.90s, 1.35s
-before the concurrent BUY launch, absent rate limiting/network delay.
