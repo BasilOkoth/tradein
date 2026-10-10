@@ -659,7 +659,7 @@
 
 <div id="serverTopNPanel" class="mt-3 rounded-xl border border-violet-500/30 bg-slate-950/55 p-3">
   <div class="flex flex-wrap items-center gap-2 mb-3">
-    <div class="text-[11px] font-black text-violet-300">⚡ SIMULTANEOUS TOP-4 RECOVERY</div>
+    <div class="text-[11px] font-black text-violet-300">⚡ TOP-4 · 6-ROUND RECOVERY</div>
     <span id="serverTopNStatus" class="edge-pill text-slate-300">READY</span>
   </div>
 
@@ -683,7 +683,7 @@
     <div class="flex items-end">
       <button id="serverTopNExecuteBtn" type="button" onclick="executeServerTopN()"
         class="server-exec-btn w-full bg-violet-700 hover:bg-violet-600">
-        Execute Top-4
+        Execute Top-4 Simultaneous
       </button>
     </div>
   </div>
@@ -696,6 +696,8 @@
     <div id="serverTopNHeroMeta" class="mt-1 text-[11px] text-slate-400">
       Waiting for a Top-4 basket.
     </div>
+
+    <div id="serverTopNRoundHistory" class="mt-2 text-[10px] text-slate-400"></div>
   </div>
 
   <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
@@ -712,7 +714,7 @@
       <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Session Top-N P/L</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">All-Time Top-N P/L</div>
       <div id="serverTopNSessionPnl" class="text-sm font-black text-white">$0.00</div>
     </div>
   </div>
@@ -12967,7 +12969,8 @@ function toggleServerContinuousResearch() {
                     heroResult.textContent = 'OPEN';
                     heroResult.className =
                         'mt-1 text-3xl font-black text-amber-300';
-                    heroPnl.textContent = 'SETTLING…';
+                    // Clear the previous round P/L as soon as a new round starts.
+                    heroPnl.textContent = '$0.00';
                     heroPnl.className =
                         'mt-1 text-xl font-black text-amber-200';
                     heroMeta.textContent =
@@ -13121,6 +13124,127 @@ function toggleServerContinuousResearch() {
                 noteEl.textContent =
                     `Round ${round}/${maxRounds} · accumulated loss $${loss.toFixed(2)} · ` +
                     `next basket $${basketStake.toFixed(2)} · target cycle profit +$${target.toFixed(2)}.`;
+            }
+        }
+
+
+
+        function clearServerTopNCurrentRound() {
+            const heroResult = document.getElementById('serverTopNHeroResult');
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
+            const legsEl = document.getElementById('serverTopNLegs');
+
+            if (heroResult) {
+                heroResult.textContent = 'ROUND STARTING';
+                heroResult.className = 'mt-1 text-3xl font-black text-amber-300';
+            }
+            if (heroPnl) {
+                heroPnl.textContent = '$0.00';
+                heroPnl.className = 'mt-1 text-xl font-black text-slate-300';
+            }
+            if (heroMeta) {
+                heroMeta.textContent = 'Previous round P/L cleared. Opening the next Top-4 basket…';
+            }
+            if (legsEl) {
+                legsEl.textContent = 'Submitting four simultaneous DigitMatch contracts…';
+            }
+        }
+
+        function renderServerTopNAutoCycleResult(payload) {
+            const historyEl = document.getElementById('serverTopNRoundHistory');
+            const rounds = Array.isArray(payload?.rounds) ? payload.rounds : [];
+
+            if (historyEl) {
+                historyEl.innerHTML = rounds.map(r => {
+                    const pnl = Number(r?.net_profit || 0);
+                    const good = pnl > 0;
+                    return `<span class="${good ? 'text-emerald-300 font-black' : 'text-rose-300 font-black'} mr-2">
+                        R${Number(r?.round || 0)} ${formatSignedMoney(pnl)}
+                    </span>`;
+                }).join('');
+            }
+
+            const latest = payload?.latest || null;
+            if (latest) {
+                renderServerTopNResult(latest, null);
+            }
+        }
+
+        async function executeServerTop4DemoRecoveryCycle() {
+            const s = window.SERVER_EXECUTION;
+
+            if (!s?.enabled) {
+                throw new Error('Enable Server mode first.');
+            }
+
+            if (!s.sessionId) {
+                await pollServerExecutionState();
+            }
+
+            if (!s.sessionId) {
+                throw new Error('No server session is selected.');
+            }
+
+            let readiness = getServerTopNReadiness();
+            if (!readiness.ready) {
+                await armServerTopNFeed({ silent: false });
+                await new Promise(resolve => setTimeout(resolve, 250));
+                await pollServerExecutionState();
+                readiness = getServerTopNReadiness();
+            }
+
+            if (!readiness.ready) {
+                setServerTopNStatus(
+                    'WARMING',
+                    `Server DigitScore ${readiness.historyCount}/${readiness.minimumHistory}.`,
+                    'warn'
+                );
+                return;
+            }
+
+            clearServerTopNCurrentRound();
+            setServerTopNStatus(
+                'RUNNING',
+                'Automatic DEMO Top-4 recovery cycle running. Stops on a profitable basket or after Round 6.',
+                'warn'
+            );
+
+            const btn = document.getElementById('serverTopNExecuteBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Running recovery…';
+            }
+
+            try {
+                const result = await serverExecRequest(
+                    `/sessions/${s.sessionId}/top4/recovery-demo`,
+                    { method: 'POST' }
+                );
+
+                renderServerTopNAutoCycleResult(result);
+                await pollServerExecutionState();
+                await pollServerTopNResult();
+
+                if (result?.cycle_status === 'WIN') {
+                    setServerTopNStatus(
+                        'WIN',
+                        `Cycle won on round ${result.winning_round}. Recovery reset to Round 1.`,
+                        'good'
+                    );
+                } else {
+                    setServerTopNStatus(
+                        'STOPPED',
+                        'Six rounds completed without a profitable basket.',
+                        'bad'
+                    );
+                }
+
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Execute Top-4 Simultaneous Simultaneous';
+                }
             }
         }
 
@@ -13282,6 +13406,36 @@ function toggleServerContinuousResearch() {
 
 
         async function executeServerTopN() {
+            const currentMode = String(
+                window.SERVER_EXECUTION?.state?.account_mode ||
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                'DEMO'
+            ).toUpperCase();
+
+            const requestedTopN = Math.max(
+                1,
+                Math.min(
+                    7,
+                    Math.trunc(
+                        Number(
+                            document.getElementById('serverTopNCount')?.value || 4
+                        )
+                    )
+                )
+            );
+
+            if (currentMode === 'DEMO' && requestedTopN === 4) {
+                try {
+                    return await executeServerTop4DemoRecoveryCycle();
+                } catch (e) {
+                    setServerTopNStatus('ERROR', e.message, 'bad');
+                    log(`❌ Top-4 recovery cycle failed: ${e.message}`, 'ERROR');
+                    return;
+                }
+            }
+
+
             const s = window.SERVER_EXECUTION;
 
             try {

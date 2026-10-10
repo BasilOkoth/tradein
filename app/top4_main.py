@@ -37,6 +37,17 @@ async def topn_arm(
     )
 
 
+@app.post("/sessions/{sid}/top4/recovery-demo")
+async def top4_recovery_demo(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    return await top4_baskets.execute_demo_recovery_cycle(
+        user_id=user_id,
+        sid=sid,
+    )
+
+
 @app.post("/sessions/{sid}/top4/execute")
 async def topn_execute_demo(
     sid: int,
@@ -96,7 +107,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "TOP4_RECOVERY_V12_FAST_SETTLEMENT",
+        "topn_mode": "TOP4_RECOVERY_V13_DEMO_AUTOCHAIN",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,

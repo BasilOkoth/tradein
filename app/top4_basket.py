@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V12_FAST_SETTLEMENT"
+    VERSION = "TOP4_RECOVERY_V13_DEMO_AUTOCHAIN"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -774,6 +774,126 @@ class Top4BasketService:
             for leg in runtime.get("legs", [])
             if leg.get("status") == "LOSS"
         ]
+
+
+    async def _wait_for_basket_terminal(self, basket_id, timeout=15.0):
+        deadline = asyncio.get_running_loop().time() + float(timeout)
+        while asyncio.get_running_loop().time() < deadline:
+            runtime = self.live.get(str(basket_id))
+            if runtime and str(runtime.get("status") or "").upper() in {
+                "SETTLED",
+                "SETTLEMENT_RECONCILE_REQUIRED",
+            }:
+                return runtime
+            await asyncio.sleep(0.05)
+        return self.live.get(str(basket_id))
+
+    async def execute_demo_recovery_cycle(self, *, user_id, sid):
+        """
+        DEMO-only automatic Top-4 recovery cycle.
+
+        One user action starts the cycle. Each round:
+        1. uses the current server Top-4 ranking,
+        2. uses the authoritative recovery stake,
+        3. opens four DIGITMATCH contracts,
+        4. waits for the basket to settle,
+        5. stops on positive basket P/L,
+        6. otherwise immediately advances to the next recovery round,
+           with a hard maximum of six rounds.
+
+        REAL is intentionally excluded from unattended chaining.
+        """
+        db = SessionLocal()
+        try:
+            s = self._owned_session(db, user_id, sid)
+            mode = str(s.account_mode or "").upper()
+        finally:
+            db.close()
+
+        if mode != "DEMO":
+            raise HTTPException(
+                409,
+                "Automatic six-round recovery chaining is available in DEMO only.",
+            )
+
+        results = []
+
+        for _ in range(self.RECOVERY_MAX_ROUNDS):
+            recovery = self.recovery_status(user_id=user_id, sid=sid)
+
+            if recovery.get("waiting_for_settlement"):
+                raise HTTPException(
+                    409,
+                    "A previous Top-4 basket is still settling.",
+                )
+
+            if recovery.get("stopped_after_max_losses"):
+                break
+
+            round_no = int(recovery.get("round") or 1)
+
+            runtime = await self.execute_now(
+                user_id=user_id,
+                sid=sid,
+                basket_stake=float(recovery["next_basket_stake"]),
+                top_n=self.RECOVERY_TOP_N,
+                execute_real_now=False,
+            )
+
+            basket_id = str(runtime.get("basket_id") or "")
+            settled = await self._wait_for_basket_terminal(
+                basket_id,
+                timeout=15.0,
+            )
+
+            if not settled:
+                raise HTTPException(
+                    504,
+                    f"Top-4 round {round_no} did not reach settlement in time.",
+                )
+
+            result = {
+                "round": round_no,
+                "basket_id": basket_id,
+                "status": settled.get("status"),
+                "basket_stake": float(settled.get("basket_stake") or 0),
+                "net_profit": float(settled.get("net_profit") or 0),
+                "winning_ranks": list(settled.get("winning_ranks") or []),
+                "legs": list(settled.get("legs") or []),
+            }
+            results.append(result)
+
+            # A positive basket P/L is the cycle win condition.
+            if float(result["net_profit"]) > 0:
+                return {
+                    "ok": True,
+                    "cycle_status": "WIN",
+                    "winning_round": round_no,
+                    "rounds_completed": len(results),
+                    "rounds": results,
+                    "latest": settled,
+                    "recovery": self.recovery_status(
+                        user_id=user_id,
+                        sid=sid,
+                    ),
+                }
+
+            # Let the just-persisted settlement become the authoritative basis
+            # for the next stake, then continue immediately.
+            await asyncio.sleep(0.05)
+
+        return {
+            "ok": True,
+            "cycle_status": "MAX_ROUNDS_LOSS",
+            "winning_round": None,
+            "rounds_completed": len(results),
+            "rounds": results,
+            "latest": results[-1] if results else None,
+            "recovery": self.recovery_status(
+                user_id=user_id,
+                sid=sid,
+            ),
+        }
 
 
     def status(self, *, user_id, sid):
