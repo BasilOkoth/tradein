@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -14,11 +15,18 @@ from .engine import engine
 
 
 class Top4BasketService:
-    """Configurable simultaneous Top-N DEMO execution (1..7)."""
+    """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOPN_REAL_START_FIX_V9"
+    VERSION = "TOP4_RECOVERY_V10"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
+    MIN_LEG_STAKE = 0.35
+
+    # Six-round Top-4 loss-recovery policy.
+    RECOVERY_TOP_N = 4
+    RECOVERY_MAX_ROUNDS = 6
+    RECOVERY_TARGET_PROFIT = 1.00
+    DIGITMATCH_TOTAL_RETURN = 8.93
 
     def __init__(self):
         self.live = {}
@@ -35,18 +43,39 @@ class Top4BasketService:
             raise HTTPException(400, "top_n must be between 1 and 7")
         return top_n
 
-    @staticmethod
-    def _split_stake(total, count):
+    @classmethod
+    def _split_stake(cls, total, count):
         total = round(float(total), 2)
         count = int(count)
-        if total <= 0:
-            raise HTTPException(400, "basket_stake must be > 0")
-        each = round(total / count, 2)
-        stakes = [each] * count
-        stakes[-1] = round(total - sum(stakes[:-1]), 2)
-        if min(stakes) <= 0:
-            raise HTTPException(400, "basket stake is too small for selected top_n")
-        return stakes
+
+        minimum_total = round(cls.MIN_LEG_STAKE * count, 2)
+
+        if total < minimum_total:
+            raise HTTPException(
+                400,
+                f"Top-{count} requires a basket stake of at least "
+                f"{minimum_total:.2f} ({cls.MIN_LEG_STAKE:.2f} per contract).",
+            )
+
+        # Split cents deterministically so every leg remains at or above
+        # Deriv's minimum stake and the legs add up to the requested basket.
+        total_cents = int(round(total * 100))
+        min_leg_cents = int(round(cls.MIN_LEG_STAKE * 100))
+        base_cents, remainder = divmod(total_cents, count)
+
+        stakes_cents = [
+            base_cents + (1 if i < remainder else 0)
+            for i in range(count)
+        ]
+
+        if min(stakes_cents) < min_leg_cents:
+            raise HTTPException(
+                400,
+                f"Top-{count} requires at least {cls.MIN_LEG_STAKE:.2f} "
+                "per contract.",
+            )
+
+        return [round(cents / 100.0, 2) for cents in stakes_cents]
 
     @staticmethod
     def _owned_session(db, user_id, sid):
@@ -101,6 +130,163 @@ class Top4BasketService:
             pass
 
 
+    def _session_baskets(self, db, sid):
+        logs = (
+            db.query(TradeLog)
+            .filter(TradeLog.trading_session_id == int(sid))
+            .order_by(TradeLog.id.asc())
+            .all()
+        )
+
+        baskets = {}
+        for log in logs:
+            try:
+                raw = json.loads(log.raw_json or "{}")
+            except Exception:
+                continue
+
+            if raw.get("kind") not in {"TOPN_SIMULTANEOUS_LEG", "TOP4_BASKET_LEG"}:
+                continue
+
+            basket_id = str(raw.get("basket_id") or "")
+            if not basket_id:
+                continue
+
+            basket = baskets.setdefault(
+                basket_id,
+                {
+                    "basket_id": basket_id,
+                    "top_n": int(raw.get("top_n") or 0),
+                    "triggered_at": raw.get("triggered_at"),
+                    "legs": [],
+                },
+            )
+
+            basket["legs"].append(
+                {
+                    "rank": raw.get("rank"),
+                    "stake": float(log.stake or 0),
+                    "status": str(log.status or "").upper(),
+                    "profit": float(log.profit or 0),
+                }
+            )
+
+        ordered = []
+        for basket in baskets.values():
+            basket["total_stake"] = round(
+                sum(float(x.get("stake") or 0) for x in basket["legs"]),
+                2,
+            )
+            basket["net_profit"] = round(
+                sum(float(x.get("profit") or 0) for x in basket["legs"]),
+                2,
+            )
+            basket["settled"] = bool(basket["legs"]) and all(
+                str(x.get("status") or "").upper() in {"WIN", "LOSS"}
+                for x in basket["legs"]
+            )
+            ordered.append(basket)
+
+        ordered.sort(key=lambda x: x.get("triggered_at") or "")
+        return ordered
+
+    def recovery_status(self, *, user_id, sid):
+        db = SessionLocal()
+        try:
+            self._owned_session(db, user_id, sid)
+            baskets = [
+                basket
+                for basket in self._session_baskets(db, sid)
+                if int(basket.get("top_n") or 0) == self.RECOVERY_TOP_N
+            ]
+        finally:
+            db.close()
+
+        unsettled = [b for b in baskets if not b.get("settled")]
+        if unsettled:
+            latest = unsettled[-1]
+            return {
+                "enabled": True,
+                "top_n": self.RECOVERY_TOP_N,
+                "max_rounds": self.RECOVERY_MAX_ROUNDS,
+                "target_profit": self.RECOVERY_TARGET_PROFIT,
+                "return_multiplier": self.DIGITMATCH_TOTAL_RETURN,
+                "waiting_for_settlement": True,
+                "stopped_after_max_losses": False,
+                "round": None,
+                "completed_loss_rounds": None,
+                "accumulated_loss": None,
+                "next_leg_stake": None,
+                "next_basket_stake": None,
+                "latest_basket_id": latest.get("basket_id"),
+            }
+
+        # A profitable basket ends the current recovery cycle.
+        cycle_losses = []
+        for basket in reversed(baskets):
+            if float(basket.get("net_profit") or 0) > 0:
+                break
+            cycle_losses.append(basket)
+            if len(cycle_losses) >= self.RECOVERY_MAX_ROUNDS:
+                break
+
+        cycle_losses.reverse()
+
+        consecutive_losses = len(cycle_losses)
+        accumulated_loss = round(
+            sum(
+                max(0.0, -float(b.get("net_profit") or 0))
+                for b in cycle_losses
+            ),
+            2,
+        )
+
+        stopped = consecutive_losses >= self.RECOVERY_MAX_ROUNDS
+        next_round = None if stopped else consecutive_losses + 1
+
+        denominator = (
+            self.DIGITMATCH_TOTAL_RETURN
+            - self.RECOVERY_TOP_N
+        )
+
+        required_leg = 0.0
+        if not stopped:
+            required_leg = max(
+                self.MIN_LEG_STAKE,
+                (
+                    accumulated_loss
+                    + self.RECOVERY_TARGET_PROFIT
+                ) / denominator,
+            )
+            # Round UP so cent-rounding cannot undershoot the target.
+            required_leg = math.ceil(required_leg * 100.0) / 100.0
+
+        next_basket = (
+            round(required_leg * self.RECOVERY_TOP_N, 2)
+            if not stopped
+            else 0.0
+        )
+
+        return {
+            "enabled": True,
+            "top_n": self.RECOVERY_TOP_N,
+            "max_rounds": self.RECOVERY_MAX_ROUNDS,
+            "target_profit": self.RECOVERY_TARGET_PROFIT,
+            "return_multiplier": self.DIGITMATCH_TOTAL_RETURN,
+            "waiting_for_settlement": False,
+            "stopped_after_max_losses": stopped,
+            "round": next_round,
+            "completed_loss_rounds": consecutive_losses,
+            "accumulated_loss": accumulated_loss,
+            "next_leg_stake": round(required_leg, 2),
+            "next_basket_stake": next_basket,
+            "max_cycle_loss_if_next_loses": (
+                round(accumulated_loss + next_basket, 2)
+                if not stopped
+                else accumulated_loss
+            ),
+        }
+
     async def arm_real(self, *, user_id, sid):
         """
         Prepare the OAuth-authenticated REAL session for Top-N use without
@@ -143,8 +329,6 @@ class Top4BasketService:
                     client=client,
                 )
 
-                # Keep the legacy single-target worker OFF.
-                # Top-N REAL execution is owned only by /top4/execute-real.
                 s.running = False
                 s.paused = False
                 s.pending_real_confirmation = False
@@ -197,6 +381,23 @@ class Top4BasketService:
             try:
                 s = self._owned_session(db, user_id, sid)
 
+                active_baskets = [
+                    value
+                    for value in self.live.values()
+                    if int(value.get("session_id") or 0) == int(s.id)
+                    and str(value.get("status") or "").upper() not in {
+                        "SETTLED",
+                        "SETTLEMENT_RECONCILE_REQUIRED",
+                    }
+                ]
+
+                if active_baskets:
+                    raise HTTPException(
+                        409,
+                        "The previous simultaneous basket is still settling. "
+                        "Wait for settlement before opening the next recovery round.",
+                    )
+
                 if s.open_contract_id:
                     raise HTTPException(
                         409,
@@ -204,6 +405,33 @@ class Top4BasketService:
                     )
 
                 score, selected = self._ranking_snapshot(s.id, top_n)
+
+                recovery = None
+                if top_n == self.RECOVERY_TOP_N:
+                    recovery = self.recovery_status(
+                        user_id=user_id,
+                        sid=s.id,
+                    )
+
+                    if recovery.get("waiting_for_settlement"):
+                        raise HTTPException(
+                            409,
+                            "The previous Top-4 recovery basket is still settling.",
+                        )
+
+                    if recovery.get("stopped_after_max_losses"):
+                        raise HTTPException(
+                            409,
+                            "Top-4 recovery stopped after 6 consecutive losing rounds.",
+                        )
+
+                    # The backend owns the Top-4 recovery amount so a stale
+                    # browser value cannot break the recovery calculation.
+                    basket_stake = float(
+                        recovery["next_basket_stake"]
+                    )
+
+                # Validate basket sizing before any proposal is requested.
                 stakes = self._split_stake(basket_stake, top_n)
                 currency = self._currency(db, s)
 
@@ -246,6 +474,7 @@ class Top4BasketService:
                     "shadow": score.get("shadow"),
                     "legs": frozen_legs,
                     "triggered_at": datetime.utcnow().isoformat(),
+                    "recovery": recovery,
                 }
 
                 if mode == "REAL" and execute_real_now is not True:
@@ -271,8 +500,6 @@ class Top4BasketService:
 
                     ask_price = float(p.get("ask_price") or leg["stake"])
                     if mode == "REAL":
-                        # Explicit one-click REAL execution uses the already
-                        # OAuth-authenticated account websocket returned by OTP.
                         buy_result = await client.request(
                             {
                                 "buy": proposal_id,
@@ -296,7 +523,6 @@ class Top4BasketService:
                         "deriv_buy": buy_result,
                     }
 
-                # All selected ranks are launched concurrently.
                 results = await asyncio.gather(
                     *[proposal_then_buy(leg) for leg in frozen_legs],
                     return_exceptions=True,
@@ -404,7 +630,7 @@ class Top4BasketService:
                 if not opened:
                     raise HTTPException(
                         502,
-                        f"No DEMO Top-{top_n} contracts opened. "
+                        f"No {mode or 'DEMO'} Top-{top_n} contracts opened. "
                         + " | ".join(failures[:top_n]),
                     )
 
@@ -511,7 +737,12 @@ class Top4BasketService:
             "version": self.VERSION,
             "min_top_n": self.MIN_TOP_N,
             "max_top_n": self.MAX_TOP_N,
+            "min_leg_stake": self.MIN_LEG_STAKE,
             "latest": live[0] if live else None,
+            "recovery": self.recovery_status(
+                user_id=user_id,
+                sid=sid,
+            ),
         }
 
     def export(self, *, user_id, sid):

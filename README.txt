@@ -1,10 +1,21 @@
-FULL REPLACEMENT FILES
+TRADEIN TOP-4 RECOVERY V6
 
-Upload these files to BasilOkoth/tradein:
+Replace:
+  /bot.html
+  /app/top4_basket.py
 
-1. bot.html -> repository root /bot.html
-2. engine.py -> /app/engine.py
+Top-4 recovery:
+- maximum 6 rounds
+- target cycle profit: $1.00
+- assumed DigitMatch total return: 8.93x
+- minimum leg stake: $0.35
+- next stake is calculated from actual settled Top-4 losses
+- a profitable basket resets the cycle to Round 1
+- after 6 consecutive losing baskets, recovery stops
+- the next basket cannot open while the previous basket is settling
+- backend owns the Top-4 recovery stake to avoid stale browser values
 
-The frontend REAL START hard-stop is removed.
-The backend keeps an explicit one-purchase confirmation boundary for REAL mode.
-Each REAL purchase, including recovery purchases, reaches WAITING_REAL_CONFIRMATION before BUY.
+REAL:
+- no unattended recovery purchases
+- each REAL basket still requires one explicit confirmation
+- after confirmation, fresh proposals are requested and the basket is submitted immediately

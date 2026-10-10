@@ -711,6 +711,33 @@
     </div>
   </div>
 
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
+      <div class="text-[9px] uppercase text-amber-300 font-bold">Recovery Round</div>
+      <div id="serverTopNRecoveryRound" class="text-sm font-black text-white">1 / 6</div>
+    </div>
+    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
+      <div class="text-[9px] uppercase text-amber-300 font-bold">Cycle Loss</div>
+      <div id="serverTopNRecoveryLoss" class="text-sm font-black text-white">$0.00</div>
+    </div>
+    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
+      <div class="text-[9px] uppercase text-amber-300 font-bold">Next Stake / Digit</div>
+      <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
+    </div>
+    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
+      <div class="text-[9px] uppercase text-amber-300 font-bold">Next Basket</div>
+      <div id="serverTopNRecoveryBasket" class="text-sm font-black text-white">$1.40</div>
+    </div>
+    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
+      <div class="text-[9px] uppercase text-amber-300 font-bold">Target Profit</div>
+      <div id="serverTopNRecoveryTarget" class="text-sm font-black text-white">+$1.00</div>
+    </div>
+  </div>
+
+  <div id="serverTopNRecoveryNote" class="mt-2 text-[10px] text-amber-200">
+    Top-4 recovery: maximum 6 rounds. Stake is recalculated from actual settled losses.
+  </div>
+
   <div id="serverTopNLegs" class="mt-2 text-[10px] text-slate-300">No simultaneous basket yet.</div>
 
   <div id="serverTopNDetail" class="mt-2 text-[10px] text-slate-400">
@@ -12719,9 +12746,20 @@ function toggleServerContinuousResearch() {
                 )
             );
 
-            const basketStake = Number(
+            let basketStake = Number(
                 document.getElementById('serverTopNStake')?.value || 0
             );
+
+            if (
+                topN === 4 &&
+                window.SERVER_EXECUTION?.topNRecovery &&
+                !window.SERVER_EXECUTION.topNRecovery.waiting_for_settlement &&
+                !window.SERVER_EXECUTION.topNRecovery.stopped_after_max_losses
+            ) {
+                basketStake = Number(
+                    window.SERVER_EXECUTION.topNRecovery.next_basket_stake || basketStake
+                );
+            }
 
             const minimumBasketStake =
                 serverTopNMinimumBasketStake(topN);
@@ -12934,6 +12972,82 @@ function toggleServerContinuousResearch() {
             }
         }
 
+
+        function renderServerTopNRecovery(recovery) {
+            const roundEl = document.getElementById('serverTopNRecoveryRound');
+            const lossEl = document.getElementById('serverTopNRecoveryLoss');
+            const legEl = document.getElementById('serverTopNRecoveryLegStake');
+            const basketEl = document.getElementById('serverTopNRecoveryBasket');
+            const targetEl = document.getElementById('serverTopNRecoveryTarget');
+            const noteEl = document.getElementById('serverTopNRecoveryNote');
+            const stakeInput = document.getElementById('serverTopNStake');
+            const topNInput = document.getElementById('serverTopNCount');
+
+            if (!recovery) return;
+
+            // Recovery policy is intentionally Top-4 only.
+            if (topNInput && Number(topNInput.value || 4) !== 4) {
+                if (noteEl) {
+                    noteEl.textContent =
+                        'Six-round loss recovery applies to Top-4 only.';
+                }
+                return;
+            }
+
+            if (recovery.waiting_for_settlement) {
+                if (roundEl) roundEl.textContent = 'SETTLING';
+                if (noteEl) {
+                    noteEl.textContent =
+                        'Previous Top-4 basket is settling. No next basket can open yet.';
+                }
+                return;
+            }
+
+            if (recovery.stopped_after_max_losses) {
+                if (roundEl) roundEl.textContent = 'STOPPED 6 / 6';
+                if (lossEl) {
+                    lossEl.textContent =
+                        `$${Number(recovery.accumulated_loss || 0).toFixed(2)}`;
+                }
+                if (legEl) legEl.textContent = '—';
+                if (basketEl) basketEl.textContent = '—';
+                if (noteEl) {
+                    noteEl.textContent =
+                        'Hard stop reached after 6 consecutive losing baskets. Do not continue recovery.';
+                }
+                return;
+            }
+
+            const round = Number(recovery.round || 1);
+            const maxRounds = Number(recovery.max_rounds || 6);
+            const loss = Number(recovery.accumulated_loss || 0);
+            const legStake = Number(recovery.next_leg_stake || 0.35);
+            const basketStake = Number(recovery.next_basket_stake || 1.40);
+            const target = Number(recovery.target_profit || 1);
+
+            if (roundEl) roundEl.textContent = `${round} / ${maxRounds}`;
+            if (lossEl) lossEl.textContent = `$${loss.toFixed(2)}`;
+            if (legEl) legEl.textContent = `$${legStake.toFixed(2)}`;
+            if (basketEl) basketEl.textContent = `$${basketStake.toFixed(2)}`;
+            if (targetEl) targetEl.textContent = `+$${target.toFixed(2)}`;
+
+            // Keep browser input synchronized with the authoritative server
+            // recovery stake. The backend re-checks it before execution.
+            if (stakeInput) {
+                stakeInput.value = basketStake.toFixed(2);
+                stakeInput.readOnly = true;
+                stakeInput.title =
+                    'Top-4 recovery stake is calculated automatically from settled losses.';
+            }
+
+            if (noteEl) {
+                noteEl.textContent =
+                    `Round ${round}/${maxRounds} · accumulated loss $${loss.toFixed(2)} · ` +
+                    `next basket $${basketStake.toFixed(2)} · target cycle profit +$${target.toFixed(2)}.`;
+            }
+        }
+
+
         async function pollServerTopNResult() {
             const s = window.SERVER_EXECUTION;
             if (!s?.enabled || !s?.sessionId) return;
@@ -12963,10 +13077,16 @@ function toggleServerContinuousResearch() {
                 } catch (_) {}
 
                 const latest = statusPayload?.latest || null;
+                const recovery = statusPayload?.recovery || null;
+
                 renderServerTopNResult(latest, cumulativePnl);
+                renderServerTopNRecovery(recovery);
 
                 if (latest) {
                     window.SERVER_EXECUTION.topNLatest = latest;
+                }
+                if (recovery) {
+                    window.SERVER_EXECUTION.topNRecovery = recovery;
                 }
 
             } catch (_) {
@@ -13120,11 +13240,22 @@ function toggleServerContinuousResearch() {
                         .map(x => Number(x?.digit))
                         .filter(Number.isInteger);
 
+                    const recovery = window.SERVER_EXECUTION?.topNRecovery || null;
+                    const recoveryLine = (
+                        cfg.top_n === 4 &&
+                        recovery &&
+                        !recovery.waiting_for_settlement
+                    )
+                        ? `Recovery round: ${recovery.round || '—'}/${recovery.max_rounds || 6}\n` +
+                          `Accumulated cycle loss: $${Number(recovery.accumulated_loss || 0).toFixed(2)}\n`
+                        : '';
+
                     const ok = confirm(
                         `Confirm REAL simultaneous Top-${cfg.top_n} DigitMatch basket?\n\n` +
+                        recoveryLine +
                         `Current ranked digits: ${digits.length ? digits.join(', ') : 'Top-ranked digits'}\n` +
                         `Total basket stake: $${cfg.basket_stake.toFixed(2)}\n\n` +
-                        `This confirmation applies to this basket only.`
+                        `This confirmation authorizes this basket only.`
                     );
 
                     if (!ok) {
@@ -15294,8 +15425,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const stakeInput = document.getElementById('serverTopNStake');
 
     topNInput?.addEventListener('input', () => {
+        const stakeInput = document.getElementById('serverTopNStake');
+        if (stakeInput) {
+            stakeInput.readOnly = Number(topNInput.value || 4) === 4;
+        }
         try { syncServerTopNMinimumStake(); } catch (_) {}
         try { renderServerTopNReadiness(); } catch (_) {}
+        try {
+            renderServerTopNRecovery(
+                window.SERVER_EXECUTION?.topNRecovery || null
+            );
+        } catch (_) {}
     });
 
     stakeInput?.addEventListener('input', () => {
