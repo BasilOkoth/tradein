@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V14_ONE_TRADE_PNL"
+    VERSION = "TOP4_RECOVERY_V16_STABLE_DUAL_MODE"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -30,6 +30,7 @@ class Top4BasketService:
 
     def __init__(self):
         self.live = {}
+        self.cycles = {}
         self._locks = defaultdict(asyncio.Lock)
         self._settlement_tasks = {}
 
@@ -198,73 +199,48 @@ class Top4BasketService:
                 basket
                 for basket in self._session_baskets(db, sid)
                 if int(basket.get("top_n") or 0) == self.RECOVERY_TOP_N
+                and basket.get("settled")
             ]
         finally:
             db.close()
 
-        unsettled = [b for b in baskets if not b.get("settled")]
-        if unsettled:
-            latest = unsettled[-1]
-            return {
-                "enabled": True,
-                "top_n": self.RECOVERY_TOP_N,
-                "max_rounds": self.RECOVERY_MAX_ROUNDS,
-                "target_profit": self.RECOVERY_TARGET_PROFIT,
-                "return_multiplier": self.DIGITMATCH_TOTAL_RETURN,
-                "waiting_for_settlement": True,
-                "stopped_after_max_losses": False,
-                "round": None,
-                "completed_loss_rounds": None,
-                "accumulated_loss": None,
-                "next_leg_stake": None,
-                "next_basket_stake": None,
-                "latest_basket_id": latest.get("basket_id"),
-            }
+        # Split historical Top-4 baskets into complete trades. A Top-4 trade
+        # ends as soon as its cumulative P/L becomes positive, or after 6 rounds.
+        current_rounds = []
+        current_trade_pnl = 0.0
 
-        # A profitable basket ends the current recovery cycle.
-        cycle_losses = []
-        for basket in reversed(baskets):
-            if float(basket.get("net_profit") or 0) > 0:
-                break
-            cycle_losses.append(basket)
-            if len(cycle_losses) >= self.RECOVERY_MAX_ROUNDS:
-                break
+        for basket in baskets:
+            pnl = float(basket.get("net_profit") or 0)
+            current_rounds.append(basket)
+            current_trade_pnl = round(current_trade_pnl + pnl, 2)
 
-        cycle_losses.reverse()
+            if (
+                current_trade_pnl > 0
+                or len(current_rounds) >= self.RECOVERY_MAX_ROUNDS
+            ):
+                current_rounds = []
+                current_trade_pnl = 0.0
 
-        consecutive_losses = len(cycle_losses)
-        accumulated_loss = round(
-            sum(
-                max(0.0, -float(b.get("net_profit") or 0))
-                for b in cycle_losses
-            ),
-            2,
-        )
-
-        stopped = consecutive_losses >= self.RECOVERY_MAX_ROUNDS
-        next_round = None if stopped else consecutive_losses + 1
+        recovery_loss = max(0.0, -current_trade_pnl)
+        next_round = len(current_rounds) + 1
 
         denominator = (
             self.DIGITMATCH_TOTAL_RETURN
             - self.RECOVERY_TOP_N
         )
 
-        required_leg = 0.0
-        if not stopped:
-            required_leg = max(
-                self.MIN_LEG_STAKE,
-                (
-                    accumulated_loss
-                    + self.RECOVERY_TARGET_PROFIT
-                ) / denominator,
-            )
-            # Round UP so cent-rounding cannot undershoot the target.
-            required_leg = math.ceil(required_leg * 100.0) / 100.0
+        required_leg = max(
+            self.MIN_LEG_STAKE,
+            (
+                recovery_loss
+                + self.RECOVERY_TARGET_PROFIT
+            ) / denominator,
+        )
+        required_leg = math.ceil(required_leg * 100.0) / 100.0
 
-        next_basket = (
-            round(required_leg * self.RECOVERY_TOP_N, 2)
-            if not stopped
-            else 0.0
+        next_basket = round(
+            required_leg * self.RECOVERY_TOP_N,
+            2,
         )
 
         return {
@@ -274,17 +250,13 @@ class Top4BasketService:
             "target_profit": self.RECOVERY_TARGET_PROFIT,
             "return_multiplier": self.DIGITMATCH_TOTAL_RETURN,
             "waiting_for_settlement": False,
-            "stopped_after_max_losses": stopped,
+            "stopped_after_max_losses": False,
             "round": next_round,
-            "completed_loss_rounds": consecutive_losses,
-            "accumulated_loss": accumulated_loss,
+            "completed_rounds": len(current_rounds),
+            "trade_pnl": round(current_trade_pnl, 2),
+            "accumulated_loss": round(recovery_loss, 2),
             "next_leg_stake": round(required_leg, 2),
             "next_basket_stake": next_basket,
-            "max_cycle_loss_if_next_loses": (
-                round(accumulated_loss + next_basket, 2)
-                if not stopped
-                else accumulated_loss
-            ),
         }
 
     async def arm(self, *, user_id, sid):
@@ -328,16 +300,9 @@ class Top4BasketService:
                     client=client,
                 )
 
-                # Do not start the legacy single-target worker. Top-N warming
-                # only needs the canonical server tick stream.
-                s.running = False
-                s.paused = False
-                s.pending_real_confirmation = False
-                s.phase = f"TOPN_{mode}_WARMING"
-                s.last_error = None
-                s.updated_at = datetime.utcnow()
-                db.commit()
-
+                # IMPORTANT: warming Top-N must never stop or rewrite the
+                # single-target worker. Both features share the same canonical
+                # tick stream, but their execution state is independent.
                 score = engine._score_all_digits(
                     s.id
                 )
@@ -392,13 +357,20 @@ class Top4BasketService:
             sid=sid,
         )
 
-    async def execute_now(self, *, user_id, sid, basket_stake, top_n=7, execute_real_now=False):
+    async def execute_now(self, *, user_id, sid, basket_stake, top_n=7, execute_real_now=False, force_basket_stake=False):
         top_n = self._validate_top_n(top_n)
 
         async with self._locks[int(sid)]:
             db = SessionLocal()
             try:
                 s = self._owned_session(db, user_id, sid)
+
+                if s.running:
+                    raise HTTPException(
+                        409,
+                        "Single-target DigitMatch is currently running. "
+                        "Stop it before starting a Top-4 trade.",
+                    )
 
                 active_baskets = [
                     value
@@ -426,26 +398,15 @@ class Top4BasketService:
                 score, selected = self._ranking_snapshot(s.id, top_n)
 
                 recovery = None
-                if top_n == self.RECOVERY_TOP_N:
+                if top_n == self.RECOVERY_TOP_N and not force_basket_stake:
                     recovery = self.recovery_status(
                         user_id=user_id,
                         sid=s.id,
                     )
 
-                    if recovery.get("waiting_for_settlement"):
-                        raise HTTPException(
-                            409,
-                            "The previous Top-4 recovery basket is still settling.",
-                        )
-
-                    if recovery.get("stopped_after_max_losses"):
-                        raise HTTPException(
-                            409,
-                            "Top-4 recovery stopped after 6 consecutive losing rounds.",
-                        )
-
-                    # The backend owns the Top-4 recovery amount so a stale
-                    # browser value cannot break the recovery calculation.
+                    # Manual Top-4 execution uses the server-calculated
+                    # recovery amount. The automatic DEMO cycle supplies its
+                    # own authoritative per-round basket stake.
                     basket_stake = float(
                         recovery["next_basket_stake"]
                     )
@@ -790,23 +751,16 @@ class Top4BasketService:
 
     async def execute_demo_recovery_cycle(self, *, user_id, sid):
         """
-        DEMO-only automatic Top-4 recovery cycle.
+        Execute ONE DEMO Top-4 trade, with at most six recovery rounds.
 
-        One user action starts the cycle. Each round:
-        1. uses the current server Top-4 ranking,
-        2. uses the authoritative recovery stake,
-        3. opens four DIGITMATCH contracts,
-        4. waits for the basket to settle,
-        5. stops on positive basket P/L,
-        6. otherwise immediately advances to the next recovery round,
-           with a hard maximum of six rounds.
-
-        REAL is intentionally excluded from unattended chaining.
+        Trade P/L starts at 0.00 for each new call and accumulates only the
+        rounds of this trade. Live progress is exposed via status().
         """
         db = SessionLocal()
         try:
             s = self._owned_session(db, user_id, sid)
             mode = str(s.account_mode or "").upper()
+            single_running = bool(s.running)
         finally:
             db.close()
 
@@ -816,96 +770,161 @@ class Top4BasketService:
                 "Automatic six-round recovery chaining is available in DEMO only.",
             )
 
-        results = []
+        if single_running:
+            raise HTTPException(
+                409,
+                "Single-target DigitMatch is currently running. "
+                "Stop it before starting a Top-4 trade.",
+            )
 
-        for _ in range(self.RECOVERY_MAX_ROUNDS):
-            recovery = self.recovery_status(user_id=user_id, sid=sid)
+        cycle = {
+            "status": "RUNNING",
+            "round": 0,
+            "max_rounds": self.RECOVERY_MAX_ROUNDS,
+            "round_status": "STARTING",
+            "trade_pnl": 0.0,
+            "recovery_loss": 0.0,
+            "stake_per_digit": self.MIN_LEG_STAKE,
+            "basket_stake": round(
+                self.MIN_LEG_STAKE * self.RECOVERY_TOP_N,
+                2,
+            ),
+            "rounds": [],
+            "latest": None,
+            "started_at": datetime.utcnow().isoformat(),
+        }
+        self.cycles[int(sid)] = cycle
 
-            if recovery.get("waiting_for_settlement"):
-                raise HTTPException(
-                    409,
-                    "A previous Top-4 basket is still settling.",
-                )
+        for round_no in range(1, self.RECOVERY_MAX_ROUNDS + 1):
+            recovery_loss = max(
+                0.0,
+                -float(cycle.get("trade_pnl") or 0),
+            )
 
-            if recovery.get("stopped_after_max_losses"):
-                break
+            denominator = (
+                self.DIGITMATCH_TOTAL_RETURN
+                - self.RECOVERY_TOP_N
+            )
 
-            round_no = int(recovery.get("round") or 1)
+            leg_stake = max(
+                self.MIN_LEG_STAKE,
+                (
+                    recovery_loss
+                    + self.RECOVERY_TARGET_PROFIT
+                ) / denominator,
+            )
+            leg_stake = math.ceil(leg_stake * 100.0) / 100.0
+            basket_stake = round(
+                leg_stake * self.RECOVERY_TOP_N,
+                2,
+            )
+
+            cycle.update({
+                "round": round_no,
+                "round_status": "SUBMITTING",
+                "recovery_loss": round(recovery_loss, 2),
+                "stake_per_digit": round(leg_stake, 2),
+                "basket_stake": basket_stake,
+                "latest": None,
+            })
 
             runtime = await self.execute_now(
                 user_id=user_id,
                 sid=sid,
-                basket_stake=float(recovery["next_basket_stake"]),
+                basket_stake=basket_stake,
                 top_n=self.RECOVERY_TOP_N,
                 execute_real_now=False,
+                force_basket_stake=True,
             )
 
             basket_id = str(runtime.get("basket_id") or "")
+            cycle["round_status"] = "OPEN"
+            cycle["latest"] = runtime
+
             settled = await self._wait_for_basket_terminal(
                 basket_id,
                 timeout=15.0,
             )
 
             if not settled:
+                cycle["status"] = "ERROR"
+                cycle["round_status"] = "SETTLEMENT_TIMEOUT"
+                cycle["finished_at"] = datetime.utcnow().isoformat()
                 raise HTTPException(
                     504,
-                    f"Top-4 round {round_no} did not reach settlement in time.",
+                    f"Top-4 round {round_no} did not settle in time.",
                 )
 
-            result = {
+            round_pnl = float(settled.get("net_profit") or 0)
+
+            round_result = {
                 "round": round_no,
                 "basket_id": basket_id,
                 "status": settled.get("status"),
-                "basket_stake": float(settled.get("basket_stake") or 0),
-                "net_profit": float(settled.get("net_profit") or 0),
-                "winning_ranks": list(settled.get("winning_ranks") or []),
-                "legs": list(settled.get("legs") or []),
+                "basket_stake": float(
+                    settled.get("basket_stake") or 0
+                ),
+                "net_profit": round_pnl,
+                "winning_ranks": list(
+                    settled.get("winning_ranks") or []
+                ),
+                "legs": list(
+                    settled.get("legs") or []
+                ),
             }
-            results.append(result)
 
-            trade_pnl = round(
-                sum(float(r.get("net_profit") or 0) for r in results),
+            cycle["rounds"].append(round_result)
+            cycle["trade_pnl"] = round(
+                float(cycle.get("trade_pnl") or 0)
+                + round_pnl,
                 2,
             )
+            cycle["recovery_loss"] = round(
+                max(
+                    0.0,
+                    -float(cycle["trade_pnl"]),
+                ),
+                2,
+            )
+            cycle["latest"] = settled
+            cycle["round_status"] = (
+                "ROUND_WIN"
+                if round_pnl > 0
+                else "ROUND_LOSS"
+            )
 
-            # A positive basket P/L ends the recovery cycle. The authoritative
-            # trade/cycle P&L is the sum of every recovery round in this cycle.
-            if float(result["net_profit"]) > 0:
+            # The Top-4 TRADE is only a WIN when total trade P/L is positive.
+            if float(cycle["trade_pnl"]) > 0:
+                cycle["status"] = "WIN"
+                cycle["winning_round"] = round_no
+                cycle["finished_at"] = datetime.utcnow().isoformat()
+
                 return {
                     "ok": True,
                     "cycle_status": "WIN",
                     "winning_round": round_no,
-                    "rounds_completed": len(results),
-                    "trade_pnl": trade_pnl,
-                    "rounds": results,
+                    "rounds_completed": len(cycle["rounds"]),
+                    "trade_pnl": cycle["trade_pnl"],
+                    "rounds": list(cycle["rounds"]),
                     "latest": settled,
-                    "recovery": self.recovery_status(
-                        user_id=user_id,
-                        sid=sid,
-                    ),
                 }
 
-            # Let the just-persisted settlement become the authoritative basis
-            # for the next stake, then continue immediately.
-            await asyncio.sleep(0.05)
+            if round_no < self.RECOVERY_MAX_ROUNDS:
+                cycle["round_status"] = "NEXT_ROUND"
+                await asyncio.sleep(0.05)
 
-        trade_pnl = round(
-            sum(float(r.get("net_profit") or 0) for r in results),
-            2,
-        )
+        cycle["status"] = "LOSS"
+        cycle["winning_round"] = None
+        cycle["finished_at"] = datetime.utcnow().isoformat()
 
         return {
             "ok": True,
-            "cycle_status": "MAX_ROUNDS_LOSS",
+            "cycle_status": "LOSS",
             "winning_round": None,
-            "rounds_completed": len(results),
-            "trade_pnl": trade_pnl,
-            "rounds": results,
-            "latest": results[-1] if results else None,
-            "recovery": self.recovery_status(
-                user_id=user_id,
-                sid=sid,
-            ),
+            "rounds_completed": len(cycle["rounds"]),
+            "trade_pnl": cycle["trade_pnl"],
+            "rounds": list(cycle["rounds"]),
+            "latest": cycle.get("latest"),
         }
 
 
@@ -931,6 +950,7 @@ class Top4BasketService:
             "max_top_n": self.MAX_TOP_N,
             "min_leg_stake": self.MIN_LEG_STAKE,
             "latest": live[0] if live else None,
+            "cycle": self.cycles.get(int(sid)),
             "recovery": self.recovery_status(
                 user_id=user_id,
                 sid=sid,

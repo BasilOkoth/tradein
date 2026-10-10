@@ -107,7 +107,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "TOP4_RECOVERY_V14_ONE_TRADE_PNL",
+        "topn_mode": "TOP4_RECOVERY_V16_STABLE_DUAL_MODE",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,

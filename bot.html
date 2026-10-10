@@ -714,7 +714,7 @@
       <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Previous Top-N P/L</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Trade P/L</div>
       <div id="serverTopNSessionPnl" class="text-sm font-black text-white">$0.00</div>
     </div>
   </div>
@@ -11233,7 +11233,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     action = continuous
                         ? 'Auto Continue After Win ON · selecting and freezing the next AI candidate…'
                         : 'Cycle complete · press START BOT for another cycle';
-                    resultClass = 'text-xs font-bold text-green-300';
+                    resultClass = 'text-lg font-black text-emerald-400';
                     break;
 
                 case 'FAST_WON':
@@ -11242,16 +11242,16 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     action = continuous
                         ? 'Auto Continue ON · waiting for final settlement, then starting a fresh cycle…'
                         : 'Cycle complete · START BOT is ready for another cycle';
-                    resultClass = 'text-xs font-bold text-green-300';
+                    resultClass = 'text-lg font-black text-emerald-400';
                     break;
 
                 case 'MAX_TRADES_REACHED':
-                    result = 'MAX TRADES';
+                    result = 'LOSS ❌';
                     status = `Cycle reached ${tradeNo}/${maxTrades || tradeNo} trades · P/L ${formatServerMoney(pnl)}`;
                     action = continuous
                         ? 'Auto Continue After Win ON · preparing a fresh research cycle…'
                         : 'Cycle stopped at your maximum trade limit';
-                    resultClass = 'text-xs font-bold text-orange-300';
+                    resultClass = 'text-lg font-black text-rose-400';
                     break;
 
                 case 'WAITING_CANDIDATE':
@@ -11771,8 +11771,11 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 if (won || pnl > 0) {
                     el.style.color = '#4ade80';
                     el.style.fontWeight = '900';
-                } else {
+                } else if (pnl < 0) {
                     el.style.color = '#f87171';
+                    el.style.fontWeight = '900';
+                } else {
+                    el.style.color = '#e2e8f0';
                     el.style.fontWeight = '900';
                 }
             }
@@ -12543,14 +12546,18 @@ function toggleServerContinuousResearch() {
 
             if (s.sessionId) {
                 existing = (existingRows || []).find(
-                    row => Number(row.id) === Number(s.sessionId)
+                    row =>
+                        Number(row.id) === Number(s.sessionId) &&
+                        String(row.account_id) === String(account.account_id) &&
+                        String(row.account_mode || '').toLowerCase() === wanted
                 ) || null;
             }
 
             if (!existing) {
                 existing = (existingRows || []).find(
                     row =>
-                        String(row.account_id) === String(account.account_id)
+                        String(row.account_id) === String(account.account_id) &&
+                        String(row.account_mode || '').toLowerCase() === wanted
                 ) || null;
             }
 
@@ -13206,6 +13213,172 @@ function toggleServerContinuousResearch() {
         }
 
 
+        function renderServerTop4LiveCycle(cycle) {
+            const hero = document.getElementById('serverTopNHero');
+            const heroResult = document.getElementById('serverTopNHeroResult');
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
+            const roundEl = document.getElementById('serverTopNRecoveryRound');
+            const lossEl = document.getElementById('serverTopNRecoveryLoss');
+            const legStakeEl = document.getElementById('serverTopNRecoveryLegStake');
+            const historyEl = document.getElementById('serverTopNRoundHistory');
+            const legsEl = document.getElementById('serverTopNLegs');
+            const stakeInput = document.getElementById('serverTopNStake');
+
+            const status = String(cycle?.status || 'RUNNING').toUpperCase();
+            const roundStatus = String(cycle?.round_status || '').toUpperCase();
+            const round = Number(cycle?.round || 0);
+            const maxRounds = Number(cycle?.max_rounds || 6);
+            const tradePnl = Number(cycle?.trade_pnl || 0);
+            const recoveryLoss = Number(cycle?.recovery_loss || 0);
+            const legStake = Number(cycle?.stake_per_digit || 0.35);
+            const basketStake = Number(cycle?.basket_stake || 1.40);
+            const rounds = Array.isArray(cycle?.rounds) ? cycle.rounds : [];
+
+            if (stakeInput) {
+                stakeInput.value = basketStake.toFixed(2);
+            }
+            if (roundEl) {
+                roundEl.textContent =
+                    status === 'WIN' || status === 'LOSS'
+                        ? `${Math.max(round, rounds.length)} / ${maxRounds}`
+                        : `${Math.max(round, 1)} / ${maxRounds}`;
+            }
+            if (lossEl) {
+                lossEl.textContent = `$${recoveryLoss.toFixed(2)}`;
+            }
+            if (legStakeEl) {
+                legStakeEl.textContent = `$${legStake.toFixed(2)}`;
+            }
+
+            const smallTradePnl = document.getElementById('serverTopNSessionPnl');
+            if (smallTradePnl) {
+                smallTradePnl.textContent = formatSignedMoney(tradePnl);
+                smallTradePnl.className =
+                    'text-sm font-black ' +
+                    (tradePnl > 0
+                        ? 'text-emerald-300'
+                        : tradePnl < 0
+                            ? 'text-rose-300'
+                            : 'text-white');
+            }
+
+            if (heroPnl) {
+                heroPnl.textContent = formatSignedMoney(tradePnl);
+                heroPnl.className =
+                    'mt-1 text-3xl font-black ' +
+                    (tradePnl > 0
+                        ? 'text-emerald-300'
+                        : tradePnl < 0
+                            ? 'text-rose-300'
+                            : 'text-slate-200');
+            }
+
+            if (status === 'WIN') {
+                if (heroResult) {
+                    heroResult.textContent = 'WIN';
+                    heroResult.className =
+                        'mt-1 text-5xl font-black text-emerald-400';
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-emerald-500/60 ' +
+                        'bg-emerald-950/35 p-4 text-center';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        `Top-4 trade profitable on Round ${round}/${maxRounds}`;
+                }
+            } else if (status === 'LOSS') {
+                if (heroResult) {
+                    heroResult.textContent = 'LOSS';
+                    heroResult.className =
+                        'mt-1 text-5xl font-black text-rose-400';
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-rose-500/60 ' +
+                        'bg-rose-950/35 p-4 text-center';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        `Top-4 trade ended after Round ${round}/${maxRounds}`;
+                }
+            } else {
+                if (heroResult) {
+                    heroResult.textContent =
+                        roundStatus === 'OPEN'
+                            ? `ROUND ${round} OPEN`
+                            : roundStatus === 'SUBMITTING'
+                                ? `ROUND ${round} SUBMITTING`
+                                : roundStatus === 'NEXT_ROUND'
+                                    ? `NEXT: ROUND ${Math.min(round + 1, maxRounds)}`
+                                    : `ROUND ${Math.max(round, 1)} RUNNING`;
+
+                    heroResult.className =
+                        'mt-1 text-3xl font-black text-amber-300';
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-amber-500/40 ' +
+                        'bg-amber-950/20 p-4 text-center';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        `One Top-4 trade · cumulative P/L ${formatSignedMoney(tradePnl)}`;
+                }
+            }
+
+            if (historyEl) {
+                historyEl.innerHTML = rounds.map(r => {
+                    const pnl = Number(r?.net_profit || 0);
+                    const cls = pnl > 0
+                        ? 'text-emerald-300 font-black'
+                        : 'text-rose-300 font-black';
+                    return `<span class="${cls} mr-2">
+                        R${Number(r?.round || 0)} ${formatSignedMoney(pnl)}
+                    </span>`;
+                }).join('');
+            }
+
+            const latest = cycle?.latest;
+            const legs = Array.isArray(latest?.legs)
+                ? latest.legs
+                : [];
+
+            if (legsEl) {
+                if (!legs.length) {
+                    legsEl.textContent =
+                        roundStatus === 'SUBMITTING'
+                            ? 'Submitting the four current Top-4 digits…'
+                            : 'Waiting for this round to settle…';
+                } else {
+                    legsEl.innerHTML = legs.map(leg => {
+                        const legStatus = String(leg?.status || 'OPEN').toUpperCase();
+                        const profit = Number(leg?.profit || 0);
+                        const stake = Number(leg?.stake || 0);
+                        const rank = Number(leg?.rank);
+                        const digit = Number(leg?.digit);
+
+                        const cls = legStatus === 'WIN'
+                            ? 'border border-emerald-500/60 bg-emerald-950/35 text-emerald-300 font-black'
+                            : legStatus === 'LOSS'
+                                ? 'border border-rose-500/60 bg-rose-950/35 text-rose-300 font-black'
+                                : 'border border-amber-500/40 bg-amber-950/20 text-amber-200 font-black';
+
+                        return `<span class="inline-block mr-2 mb-1 rounded px-2 py-1 ${cls}">
+                            #${Number.isInteger(rank) ? rank : '—'}
+                            · D${Number.isInteger(digit) ? digit : '—'}
+                            · $${stake.toFixed(2)}
+                            · ${legStatus}
+                            ${['WIN','LOSS'].includes(legStatus) ? ` · ${formatSignedMoney(profit)}` : ''}
+                        </span>`;
+                    }).join('');
+                }
+            }
+        }
+
+
         function renderServerTopNAutoCycleResult(payload) {
             const hero = document.getElementById('serverTopNHero');
             const heroResult = document.getElementById('serverTopNHeroResult');
@@ -13384,30 +13557,38 @@ function toggleServerContinuousResearch() {
                     `/sessions/${s.sessionId}/top4/status`
                 );
 
-                let cumulativePnl = null;
-
-                // Export is persisted and lets the UI show cumulative Top-N P/L,
-                // even after multiple baskets have settled.
-                try {
-                    const exported = await serverExecRequest(
-                        `/sessions/${s.sessionId}/top4/export`
-                    );
-
-                    const baskets = Array.isArray(exported?.baskets)
-                        ? exported.baskets
-                        : [];
-
-                    cumulativePnl = baskets.reduce(
-                        (sum, basket) => sum + Number(basket?.net_profit || 0),
-                        0
-                    );
-                } catch (_) {}
-
                 const latest = statusPayload?.latest || null;
                 const recovery = statusPayload?.recovery || null;
+                const cycle = statusPayload?.cycle || null;
 
-                renderServerTopNResult(latest, cumulativePnl);
-                renderServerTopNRecovery(recovery);
+                if (cycle) {
+                    renderServerTop4LiveCycle(cycle);
+                    window.SERVER_EXECUTION.top4Cycle = cycle;
+                } else if (!window.SERVER_EXECUTION?.top4AutoCycleRunning) {
+                    // Idle Top-4 state: show a clean new-trade screen.
+                    renderServerTopNRecovery(recovery);
+
+                    if (!latest) {
+                        const heroResult = document.getElementById('serverTopNHeroResult');
+                        const heroPnl = document.getElementById('serverTopNHeroPnl');
+                        const heroMeta = document.getElementById('serverTopNHeroMeta');
+
+                        if (heroResult) {
+                            heroResult.textContent = 'READY';
+                            heroResult.className =
+                                'mt-1 text-3xl font-black text-slate-200';
+                        }
+                        if (heroPnl) {
+                            heroPnl.textContent = '$0.00';
+                            heroPnl.className =
+                                'mt-1 text-3xl font-black text-slate-200';
+                        }
+                        if (heroMeta) {
+                            heroMeta.textContent =
+                                'New Top-4 trade ready.';
+                        }
+                    }
+                }
 
                 if (latest) {
                     window.SERVER_EXECUTION.topNLatest = latest;
@@ -13417,8 +13598,7 @@ function toggleServerContinuousResearch() {
                 }
 
             } catch (_) {
-                // Keep the main server poll resilient if the Top-N endpoint
-                // is temporarily unavailable.
+                // Top-N status must never break the single-target state poll.
             }
         }
 
