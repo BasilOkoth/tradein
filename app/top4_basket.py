@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V13_DEMO_AUTOCHAIN"
+    VERSION = "TOP4_RECOVERY_V14_ONE_TRADE_PNL"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -863,13 +863,20 @@ class Top4BasketService:
             }
             results.append(result)
 
-            # A positive basket P/L is the cycle win condition.
+            trade_pnl = round(
+                sum(float(r.get("net_profit") or 0) for r in results),
+                2,
+            )
+
+            # A positive basket P/L ends the recovery cycle. The authoritative
+            # trade/cycle P&L is the sum of every recovery round in this cycle.
             if float(result["net_profit"]) > 0:
                 return {
                     "ok": True,
                     "cycle_status": "WIN",
                     "winning_round": round_no,
                     "rounds_completed": len(results),
+                    "trade_pnl": trade_pnl,
                     "rounds": results,
                     "latest": settled,
                     "recovery": self.recovery_status(
@@ -882,11 +889,17 @@ class Top4BasketService:
             # for the next stake, then continue immediately.
             await asyncio.sleep(0.05)
 
+        trade_pnl = round(
+            sum(float(r.get("net_profit") or 0) for r in results),
+            2,
+        )
+
         return {
             "ok": True,
             "cycle_status": "MAX_ROUNDS_LOSS",
             "winning_round": None,
             "rounds_completed": len(results),
+            "trade_pnl": trade_pnl,
             "rounds": results,
             "latest": results[-1] if results else None,
             "recovery": self.recovery_status(

@@ -683,18 +683,18 @@
     <div class="flex items-end">
       <button id="serverTopNExecuteBtn" type="button" onclick="executeServerTopN()"
         class="server-exec-btn w-full bg-violet-700 hover:bg-violet-600">
-        Execute Top-4 Simultaneous
+        Start Top-4 Trade
       </button>
     </div>
   </div>
 
   <div id="serverTopNHero"
        class="mt-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4 text-center">
-    <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Latest Basket Result</div>
+    <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Top-4 Trade Result</div>
     <div id="serverTopNHeroResult" class="mt-1 text-3xl font-black text-slate-200">READY</div>
     <div id="serverTopNHeroPnl" class="mt-1 text-xl font-black text-slate-300">$0.00</div>
     <div id="serverTopNHeroMeta" class="mt-1 text-[11px] text-slate-400">
-      Waiting for a Top-4 basket.
+      New Top-4 trade ready.
     </div>
 
     <div id="serverTopNRoundHistory" class="mt-2 text-[10px] text-slate-400"></div>
@@ -706,7 +706,7 @@
       <div id="serverTopNRecoveryRound" class="text-sm font-black text-white">1 / 6</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Cycle Loss</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Recovery Loss</div>
       <div id="serverTopNRecoveryLoss" class="text-sm font-black text-white">$0.00</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
@@ -714,7 +714,7 @@
       <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">All-Time Top-N P/L</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Previous Top-N P/L</div>
       <div id="serverTopNSessionPnl" class="text-sm font-black text-white">$0.00</div>
     </div>
   </div>
@@ -12898,7 +12898,7 @@ function toggleServerContinuousResearch() {
                     heroPnl.className = 'mt-1 text-xl font-black text-slate-300';
                 }
                 if (heroMeta) {
-                    heroMeta.textContent = 'Waiting for a Top-4 basket.';
+                    heroMeta.textContent = 'New Top-4 trade ready.';
                 }
                 if (statusEl) statusEl.textContent = '—';
                 if (stakeEl) stakeEl.textContent = '$0.00';
@@ -12908,6 +12908,11 @@ function toggleServerContinuousResearch() {
                 if (sessionPnlEl && cumulativePnl !== null) {
                     sessionPnlEl.textContent = formatSignedMoney(cumulativePnl);
                 }
+                return;
+            }
+
+            const autoCycleRunning = !!window.SERVER_EXECUTION?.top4AutoCycleRunning;
+            if (autoCycleRunning) {
                 return;
             }
 
@@ -12956,7 +12961,7 @@ function toggleServerContinuousResearch() {
 
                     heroMeta.textContent = isWin
                         ? `Basket settled · winning ranks ${winners.length ? winners.map(x => '#' + x).join(', ') : '—'}`
-                        : 'Basket settled · none of the selected digits matched';
+                        : 'Recovery round settled · no selected digit matched';
 
                     if (hero) {
                         hero.className =
@@ -13129,47 +13134,164 @@ function toggleServerContinuousResearch() {
 
 
 
-        function clearServerTopNCurrentRound() {
+        function resetServerTopNTradeDisplay() {
+            const hero = document.getElementById('serverTopNHero');
             const heroResult = document.getElementById('serverTopNHeroResult');
             const heroPnl = document.getElementById('serverTopNHeroPnl');
             const heroMeta = document.getElementById('serverTopNHeroMeta');
             const legsEl = document.getElementById('serverTopNLegs');
+            const historyEl = document.getElementById('serverTopNRoundHistory');
 
+            if (hero) {
+                hero.className =
+                    'mt-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4 text-center';
+            }
             if (heroResult) {
-                heroResult.textContent = 'ROUND STARTING';
+                heroResult.textContent = 'RUNNING';
                 heroResult.className = 'mt-1 text-3xl font-black text-amber-300';
             }
             if (heroPnl) {
                 heroPnl.textContent = '$0.00';
-                heroPnl.className = 'mt-1 text-xl font-black text-slate-300';
+                heroPnl.className = 'mt-1 text-2xl font-black text-slate-200';
             }
             if (heroMeta) {
-                heroMeta.textContent = 'Previous round P/L cleared. Opening the next Top-4 basket…';
+                heroMeta.textContent =
+                    'One Top-4 trade started · recovery can use up to 6 rounds.';
             }
             if (legsEl) {
-                legsEl.textContent = 'Submitting four simultaneous DigitMatch contracts…';
+                legsEl.textContent =
+                    'Waiting for the first recovery round result…';
+            }
+            if (historyEl) {
+                historyEl.textContent = '';
             }
         }
 
-        function renderServerTopNAutoCycleResult(payload) {
+        function renderServerTopNTradeProgress(rounds) {
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
             const historyEl = document.getElementById('serverTopNRoundHistory');
-            const rounds = Array.isArray(payload?.rounds) ? payload.rounds : [];
+
+            const list = Array.isArray(rounds) ? rounds : [];
+            const tradePnl = list.reduce(
+                (sum, r) => sum + Number(r?.net_profit || 0),
+                0
+            );
+
+            if (heroPnl) {
+                heroPnl.textContent = formatSignedMoney(tradePnl);
+                heroPnl.className =
+                    'mt-1 text-2xl font-black ' +
+                    (tradePnl > 0
+                        ? 'text-emerald-300'
+                        : tradePnl < 0
+                            ? 'text-rose-300'
+                            : 'text-slate-200');
+            }
+
+            if (heroMeta && list.length) {
+                const latest = list[list.length - 1];
+                heroMeta.textContent =
+                    `Round ${latest.round}/6 settled · cumulative Top-4 trade P/L ${formatSignedMoney(tradePnl)}`;
+            }
+
+            if (historyEl) {
+                historyEl.innerHTML = list.map(r => {
+                    const pnl = Number(r?.net_profit || 0);
+                    return `<span class="${pnl > 0 ? 'text-emerald-300' : 'text-rose-300'} mr-2">
+                        R${Number(r?.round || 0)} ${formatSignedMoney(pnl)}
+                    </span>`;
+                }).join('');
+            }
+        }
+
+
+        function renderServerTopNAutoCycleResult(payload) {
+            const hero = document.getElementById('serverTopNHero');
+            const heroResult = document.getElementById('serverTopNHeroResult');
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
+            const historyEl = document.getElementById('serverTopNRoundHistory');
+            const legsEl = document.getElementById('serverTopNLegs');
+
+            const rounds = Array.isArray(payload?.rounds)
+                ? payload.rounds
+                : [];
+
+            const tradePnl = Number(
+                payload?.trade_pnl ??
+                rounds.reduce(
+                    (sum, r) => sum + Number(r?.net_profit || 0),
+                    0
+                )
+            );
+
+            const isWin = String(payload?.cycle_status || '') === 'WIN';
+
+            if (heroResult) {
+                heroResult.textContent = isWin ? 'WIN' : 'LOSS';
+                heroResult.className =
+                    'mt-1 text-4xl font-black ' +
+                    (isWin ? 'text-emerald-400' : 'text-rose-400');
+            }
+
+            if (heroPnl) {
+                heroPnl.textContent = formatSignedMoney(tradePnl);
+                heroPnl.className =
+                    'mt-1 text-3xl font-black ' +
+                    (isWin ? 'text-emerald-300' : 'text-rose-300');
+            }
+
+            if (heroMeta) {
+                heroMeta.textContent = isWin
+                    ? `Top-4 trade won on Round ${payload?.winning_round || rounds.length}/6`
+                    : `Top-4 trade stopped after ${rounds.length}/6 rounds`;
+            }
+
+            if (hero) {
+                hero.className =
+                    'mt-3 rounded-xl border p-4 text-center ' +
+                    (isWin
+                        ? 'border-emerald-500/50 bg-emerald-950/30'
+                        : 'border-rose-500/50 bg-rose-950/30');
+            }
 
             if (historyEl) {
                 historyEl.innerHTML = rounds.map(r => {
                     const pnl = Number(r?.net_profit || 0);
-                    const good = pnl > 0;
-                    return `<span class="${good ? 'text-emerald-300 font-black' : 'text-rose-300 font-black'} mr-2">
+                    return `<span class="${pnl > 0 ? 'text-emerald-300 font-black' : 'text-rose-300 font-black'} mr-2">
                         R${Number(r?.round || 0)} ${formatSignedMoney(pnl)}
                     </span>`;
                 }).join('');
             }
 
-            const latest = payload?.latest || null;
-            if (latest) {
-                renderServerTopNResult(latest, null);
+            const latest = rounds.length
+                ? rounds[rounds.length - 1]
+                : null;
+
+            if (legsEl && latest?.legs) {
+                legsEl.innerHTML = latest.legs.map(leg => {
+                    const legStatus = String(leg?.status || '').toUpperCase();
+                    const profit = Number(leg?.profit || 0);
+                    const stake = Number(leg?.stake || 0);
+                    const rank = Number(leg?.rank);
+                    const digit = Number(leg?.digit);
+
+                    const cls = legStatus === 'WIN'
+                        ? 'border border-emerald-500/50 bg-emerald-950/30 text-emerald-300 font-black'
+                        : 'border border-rose-500/50 bg-rose-950/30 text-rose-300 font-black';
+
+                    return `<span class="inline-block mr-2 mb-1 rounded px-2 py-1 ${cls}">
+                        #${Number.isInteger(rank) ? rank : '—'}
+                        · D${Number.isInteger(digit) ? digit : '—'}
+                        · $${stake.toFixed(2)}
+                        · ${legStatus}
+                        · ${formatSignedMoney(profit)}
+                    </span>`;
+                }).join('');
             }
         }
+
 
         async function executeServerTop4DemoRecoveryCycle() {
             const s = window.SERVER_EXECUTION;
@@ -13203,10 +13325,10 @@ function toggleServerContinuousResearch() {
                 return;
             }
 
-            clearServerTopNCurrentRound();
+            resetServerTopNTradeDisplay();
             setServerTopNStatus(
                 'RUNNING',
-                'Automatic DEMO Top-4 recovery cycle running. Stops on a profitable basket or after Round 6.',
+                'One DEMO Top-4 trade is running. Recovery can advance automatically through Rounds 1–6 until profitable.',
                 'warn'
             );
 
@@ -13217,6 +13339,8 @@ function toggleServerContinuousResearch() {
             }
 
             try {
+                window.SERVER_EXECUTION.top4AutoCycleRunning = true;
+
                 const result = await serverExecRequest(
                     `/sessions/${s.sessionId}/top4/recovery-demo`,
                     { method: 'POST' }
@@ -13241,9 +13365,11 @@ function toggleServerContinuousResearch() {
                 }
 
             } finally {
+                window.SERVER_EXECUTION.top4AutoCycleRunning = false;
+
                 if (btn) {
                     btn.disabled = false;
-                    btn.textContent = 'Execute Top-4 Simultaneous Simultaneous';
+                    btn.textContent = 'Start Top-4 Trade Simultaneous';
                 }
             }
         }
