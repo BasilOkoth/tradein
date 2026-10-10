@@ -365,12 +365,22 @@ class Top4BasketService:
             try:
                 s = self._owned_session(db, user_id, sid)
 
-                if s.running:
+                if s.open_contract_id:
                     raise HTTPException(
                         409,
-                        "Single-target DigitMatch is currently running. "
-                        "Stop it before starting a Top-4 trade.",
+                        "Single-target DigitMatch has an open REAL contract. "
+                        "Let it settle before starting Top-4.",
                     )
+
+                # A WAITING_REAL_CONFIRMATION single-target worker has not bought
+                # anything yet. Top-4 may take ownership safely.
+                if s.running or s.pending_real_confirmation:
+                    s.running = False
+                    s.paused = False
+                    s.pending_real_confirmation = False
+                    s.phase = "TOP4_OWNERSHIP"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
 
                 active_baskets = [
                     value

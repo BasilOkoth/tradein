@@ -659,7 +659,7 @@
 <div class="text-[11px] text-gray-400 mb-3">
                         When enabled, proposal/buy/settlement ownership moves to the server worker.
                         A started DEMO cycle can continue after this dashboard closes. Auto Continue After Win can automatically begin a fresh DEMO cycle after a win while this dashboard remains open.
-                        REAL state stays on the server, but every new real-money purchase requires explicit confirmation.
+                        When Top-4 recovery is active, it exclusively owns REAL execution; the old single-target REAL confirmation is disabled.
                     </div>
 <div class="server-exec-grid">
 <div class="server-exec-card"><div class="server-exec-label">Backend</div><div class="server-exec-value" id="serverExecBackend">—</div></div>
@@ -11757,6 +11757,28 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
         }
 
+        function isTop4ExecutionOwner() {
+            const s = window.SERVER_EXECUTION || {};
+            const rr = s.top4RealRecovery || null;
+            const top4Latest = s.topNLatest || null;
+            const top4Cycle = s.top4Cycle || null;
+
+            const recoveryActive =
+                rr &&
+                Number(rr.rounds_completed || 0) > 0 &&
+                rr.won !== true &&
+                rr.final_loss !== true;
+
+            const top4InFlight =
+                s.topNExecutionInFlight === true ||
+                s.top4AutoCycleRunning === true;
+
+            const latestTop4Known = !!top4Latest || !!top4Cycle;
+
+            return top4InFlight || recoveryActive || latestTop4Known;
+        }
+
+
         function renderServerExecutionState() {
             const s = window.SERVER_EXECUTION;
             const st = s.state || {};
@@ -11829,7 +11851,19 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     ? `SERVER · ${(st.account_mode || sessionStorage.getItem('selectedAccountMode') || localStorage.getItem('selectedAccountMode') || 'DEMO').toUpperCase()}`
                     : 'BROWSER';
             }
-            if (serverExecEl('serverExecPhase')) serverExecEl('serverExecPhase').textContent = st.phase || '—';
+            if (serverExecEl('serverExecPhase')) {
+                const phaseEl = serverExecEl('serverExecPhase');
+                const rr = s.top4RealRecovery || null;
+                const recoveryActive =
+                    rr &&
+                    Number(rr.rounds_completed || 0) > 0 &&
+                    rr.won !== true &&
+                    rr.final_loss !== true;
+
+                phaseEl.textContent = recoveryActive
+                    ? `TOP4_REAL_RECOVERY_R${Number(rr.next_round || 1)}`
+                    : (st.phase || '—');
+            }
 
             const errorCard = serverExecEl('serverExecErrorCard');
             const errorEl = serverExecEl('serverExecError');
@@ -11921,10 +11955,14 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             if (confirmBtn) {
+                const top4OwnsExecution = isTop4ExecutionOwner();
+
                 const needsConfirm =
                     s.enabled &&
+                    !top4OwnsExecution &&
                     String(st.account_mode || '').toUpperCase() === 'REAL' &&
                     st.pending_real_confirmation === true;
+
                 confirmBtn.classList.toggle('hidden', !needsConfirm);
             }
 
@@ -11954,7 +11992,9 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
 
             
             try { refreshTop4CapitalPlan(); } catch (_) {}
-                        renderServerTradeNarrative(st);
+                        if (!isTop4ExecutionOwner()) {
+                renderServerTradeNarrative(st);
+            }
             if (
                 st?.last_settlement?.settled_at &&
                 Date.now() - Number(
@@ -14423,6 +14463,21 @@ function toggleServerContinuousResearch() {
                 let endpoint = `/sessions/${s.sessionId}/top4/execute`;
 
                 if (mode === 'REAL') {
+                    // Top-4 and single-target REAL execution are mutually exclusive.
+                    // If the legacy worker is waiting for its own confirmation,
+                    // stop it so only the Top-4 flow controls REAL purchases.
+                    if (
+                        s.state?.running === true ||
+                        s.state?.pending_real_confirmation === true
+                    ) {
+                        try {
+                            await serverExecRequest(
+                                `/sessions/${s.sessionId}/stop`,
+                                { method: 'POST' }
+                            );
+                            await pollServerExecutionState();
+                        } catch (_) {}
+                    }
                     const ranking = Array.isArray(s.state?.digit_score?.ranking)
                         ? s.state.digit_score.ranking.slice(0, cfg.top_n)
                         : [];
@@ -14721,6 +14776,14 @@ function toggleServerContinuousResearch() {
 
         // START BOT - CRITICAL FUNCTION
         function startBot() {
+            if (isTop4ExecutionOwner()) {
+                alert(
+                    'Top-4 recovery currently owns REAL execution. ' +
+                    'Finish or stop the Top-4 trade before starting the single-target bot.'
+                );
+                return;
+            }
+
             window.__dmsManualStopRequested = false;
             if (window.isBotRunning) {
                 stopBot();
