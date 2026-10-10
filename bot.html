@@ -522,6 +522,23 @@
 .server-exec-value{font-size:13px;color:#e2e8f0;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .server-exec-btn{padding:.48rem .72rem;border-radius:.65rem;font-size:.75rem;font-weight:800;color:white}
 
+
+/* === V21 STABLE DASHBOARD === */
+#serverTopNPanel { contain: layout paint; }
+#serverTopNStatus { min-width: 118px; text-align:center; white-space:nowrap; }
+#serverTopNExecuteBtn { min-width: 190px; height: 38px; white-space:nowrap; }
+#serverTopNArmBtn { min-width: 150px; height: 38px; white-space:nowrap; }
+#serverTopNHero { min-height: 132px; }
+#serverTopNHeroResult { min-height:48px; display:flex; align-items:center; justify-content:center; }
+#serverTopNHeroPnl { min-height:38px; }
+#serverTopNHeroMeta { min-height:18px; }
+#serverTopNRoundHistory { min-height:18px; }
+#serverTopNLegs { min-height:32px; }
+#serverTopNRecoveryNote { min-height:16px; }
+#serverTopNCapitalPlanner { min-height:170px; }
+#serverTopNCapitalRounds { min-height:58px; }
+#serverTopNCapitalStatus { min-width:150px; text-align:center; white-space:nowrap; }
+
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght400;600;700&amp;display=swap" rel="stylesheet"/>
 </head>
@@ -12500,7 +12517,7 @@ function toggleServerContinuousResearch() {
         function ensureServerExecutionPolling() {
             const s = window.SERVER_EXECUTION;
             if (s.pollTimer) clearInterval(s.pollTimer);
-            s.pollTimer = setInterval(pollServerExecutionState, 250);
+            s.pollTimer = setInterval(pollServerExecutionState, 750);
             pollServerExecutionState();
         }
 
@@ -13359,8 +13376,25 @@ function toggleServerContinuousResearch() {
             const margin = Number((balance - required).toFixed(2));
             const rounds = Array.isArray(plan?.rounds) ? plan.rounds : [];
 
+            const signature = JSON.stringify({
+                required: Number(required.toFixed(2)),
+                balance: Number(balance.toFixed(2)),
+                start: Number(plan?.starting_leg_stake || 0),
+                rounds: rounds.map(r => [
+                    r.round,
+                    Number(r.stake_per_digit || 0),
+                    Number(r.basket_stake || 0)
+                ])
+            });
+
+            if (window.SERVER_EXECUTION?.top4CapitalRenderSignature === signature) {
+                return;
+            }
+            window.SERVER_EXECUTION.top4CapitalRenderSignature = signature;
+
             if (requiredEl) requiredEl.textContent = `$${required.toFixed(2)}`;
             if (balanceEl) balanceEl.textContent = `$${balance.toFixed(2)}`;
+
             if (marginEl) {
                 marginEl.textContent =
                     `${margin >= 0 ? '+' : '-'}$${Math.abs(margin).toFixed(2)}`;
@@ -13368,6 +13402,7 @@ function toggleServerContinuousResearch() {
                     'text-lg font-black ' +
                     (margin >= 0 ? 'text-emerald-300' : 'text-rose-300');
             }
+
             if (round1El && rounds[0]) {
                 round1El.textContent =
                     `$${Number(rounds[0].basket_stake || 0).toFixed(2)}`;
@@ -13392,9 +13427,7 @@ function toggleServerContinuousResearch() {
                         : `NEED $${Math.max(0, required - balance).toFixed(2)} MORE`;
                 statusEl.className =
                     'edge-pill ' +
-                    (sufficient
-                        ? 'text-emerald-300'
-                        : 'text-rose-300');
+                    (sufficient ? 'text-emerald-300' : 'text-rose-300');
             }
 
             window.SERVER_EXECUTION.top4CapitalPlan = plan;
@@ -13406,18 +13439,9 @@ function toggleServerContinuousResearch() {
                     catch (_) { return { ready: false }; }
                 })();
 
-                executeBtn.disabled =
-                    !readiness.ready ||
-                    !sufficient;
-
-                executeBtn.classList.toggle(
-                    'opacity-50',
-                    executeBtn.disabled
-                );
-                executeBtn.classList.toggle(
-                    'cursor-not-allowed',
-                    executeBtn.disabled
-                );
+                executeBtn.disabled = !readiness.ready || !sufficient;
+                executeBtn.classList.toggle('opacity-50', executeBtn.disabled);
+                executeBtn.classList.toggle('cursor-not-allowed', executeBtn.disabled);
             }
         }
 
@@ -13426,6 +13450,18 @@ function toggleServerContinuousResearch() {
             if (!input) return;
 
             const raw = Number(input.value || 0.35);
+            const balance = Number(
+                window.SERVER_EXECUTION?.state?.account_balance ??
+                window.currentBalance ??
+                0
+            );
+            const key = `${raw.toFixed(2)}|${balance.toFixed(2)}`;
+
+            if (window.SERVER_EXECUTION?.top4CapitalRefreshKey === key) {
+                return;
+            }
+
+            window.SERVER_EXECUTION.top4CapitalRefreshKey = key;
             const plan = calculateTop4CapitalPlanLocal(raw);
             renderTop4CapitalPlan(plan);
         }
@@ -13492,7 +13528,7 @@ function toggleServerContinuousResearch() {
                         'bg-emerald-950/35 p-4 text-center';
                 }
                 if (executeBtn) {
-                    executeBtn.textContent = 'Start New Top-4 Trade';
+                    executeBtn.textContent = 'Start New Trade';
                 }
                 setServerTopNStatus(
                     'WIN',
@@ -13516,7 +13552,7 @@ function toggleServerContinuousResearch() {
                         'bg-rose-950/35 p-4 text-center';
                 }
                 if (executeBtn) {
-                    executeBtn.textContent = 'Start New Top-4 Trade';
+                    executeBtn.textContent = 'Start New Trade';
                 }
                 setServerTopNStatus(
                     'LOSS',
@@ -13543,8 +13579,7 @@ function toggleServerContinuousResearch() {
                 }
 
                 if (executeBtn) {
-                    executeBtn.textContent =
-                        `Confirm Round ${nextRound} · $${nextBasket.toFixed(2)}`;
+                    executeBtn.textContent = 'Confirm Next Round';
                 }
 
                 setServerTopNStatus(
@@ -14177,13 +14212,19 @@ function toggleServerContinuousResearch() {
                 const capitalOk =
                     window.SERVER_EXECUTION?.top4CapitalSufficient !== false;
 
+                const recoveryState =
+                    window.SERVER_EXECUTION?.top4RealRecovery || null;
+
+                const recoveryActive =
+                    recoveryState &&
+                    Number(recoveryState.rounds_completed || 0) > 0 &&
+                    recoveryState.won !== true &&
+                    recoveryState.final_loss !== true;
+
                 if (inFlight) {
                     btn.disabled = true;
                     btn.classList.add('opacity-50', 'cursor-not-allowed');
-                    btn.textContent = String(
-                        window.SERVER_EXECUTION?.topNExecutionStage ||
-                        'Preparing trade…'
-                    );
+                    btn.textContent = 'Processing Top-4';
                 } else {
                     btn.disabled =
                         !state.ready ||
@@ -14192,13 +14233,15 @@ function toggleServerContinuousResearch() {
                     btn.classList.toggle('opacity-50', btn.disabled);
                     btn.classList.toggle('cursor-not-allowed', btn.disabled);
 
-                    btn.textContent = !state.ready
-                        ? `Warming ${state.historyCount}/${state.minimumHistory}`
-                        : (
-                            state.topN === 4 && !capitalOk
-                                ? 'Insufficient Capital'
-                                : `Start Top-${state.topN} Trade`
-                        );
+                    if (recoveryActive) {
+                        btn.textContent = 'Confirm Next Round';
+                    } else if (!state.ready) {
+                        btn.textContent = 'Warming Top-4 Feed';
+                    } else if (state.topN === 4 && !capitalOk) {
+                        btn.textContent = 'Insufficient Capital';
+                    } else {
+                        btn.textContent = 'Start Top-4 Trade';
+                    }
                 }
             }
 
