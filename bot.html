@@ -13818,35 +13818,14 @@ function toggleServerContinuousResearch() {
                 const cycle = statusPayload?.cycle || null;
 
                 if (cycle) {
+                    // DEMO automatic multi-round Top-4 trade.
                     renderServerTop4LiveCycle(cycle);
                     window.SERVER_EXECUTION.top4Cycle = cycle;
-                } else if (!window.SERVER_EXECUTION?.top4AutoCycleRunning) {
-                    // Idle Top-4 state: show a clean new-trade screen.
-                    renderServerTopNRecovery(recovery);
+                } else if (latest) {
+                    // REAL/manual Top-4 uses the latest basket as the authoritative
+                    // visible result. Do NOT reset the hero to READY after settlement.
+                    renderServerTopNResult(latest, null);
 
-                    if (!latest) {
-                        const heroResult = document.getElementById('serverTopNHeroResult');
-                        const heroPnl = document.getElementById('serverTopNHeroPnl');
-                        const heroMeta = document.getElementById('serverTopNHeroMeta');
-
-                        if (heroResult) {
-                            heroResult.textContent = 'READY';
-                            heroResult.className =
-                                'mt-1 text-3xl font-black text-slate-200';
-                        }
-                        if (heroPnl) {
-                            heroPnl.textContent = '$0.00';
-                            heroPnl.className =
-                                'mt-1 text-3xl font-black text-slate-200';
-                        }
-                        if (heroMeta) {
-                            heroMeta.textContent =
-                                'New Top-4 trade ready.';
-                        }
-                    }
-                }
-
-                if (latest) {
                     window.SERVER_EXECUTION.topNLatest = latest;
 
                     const latestStatus = String(
@@ -13861,17 +13840,91 @@ function toggleServerContinuousResearch() {
                         window.SERVER_EXECUTION.topNExecutionStage = null;
 
                         const pnl = Number(latest?.net_profit || 0);
+                        const won = pnl > 0;
+
+                        const hero = document.getElementById('serverTopNHero');
+                        const heroResult = document.getElementById('serverTopNHeroResult');
+                        const heroPnl = document.getElementById('serverTopNHeroPnl');
+                        const heroMeta = document.getElementById('serverTopNHeroMeta');
+                        const smallPnl = document.getElementById('serverTopNSessionPnl');
+
+                        if (heroResult) {
+                            heroResult.textContent = won ? 'WIN' : 'LOSS';
+                            heroResult.className =
+                                'mt-1 text-5xl font-black ' +
+                                (won ? 'text-emerald-400' : 'text-rose-400');
+                        }
+
+                        if (heroPnl) {
+                            heroPnl.textContent = formatSignedMoney(pnl);
+                            heroPnl.className =
+                                'mt-1 text-3xl font-black ' +
+                                (won ? 'text-emerald-300' : 'text-rose-300');
+                        }
+
+                        if (smallPnl) {
+                            smallPnl.textContent = formatSignedMoney(pnl);
+                            smallPnl.className =
+                                'text-sm font-black ' +
+                                (won ? 'text-emerald-300' : 'text-rose-300');
+                        }
+
+                        if (heroMeta) {
+                            heroMeta.textContent = won
+                                ? 'Latest REAL Top-4 basket settled profitably.'
+                                : 'Latest REAL Top-4 basket settled at a loss.';
+                        }
+
+                        if (hero) {
+                            hero.className =
+                                'mt-3 rounded-xl border p-4 text-center ' +
+                                (
+                                    won
+                                        ? 'border-emerald-500/60 bg-emerald-950/35'
+                                        : 'border-rose-500/60 bg-rose-950/35'
+                                );
+                        }
 
                         setServerTopNStatus(
-                            pnl > 0 ? 'WIN' : 'LOSS',
-                            pnl > 0
+                            won ? 'WIN' : 'LOSS',
+                            won
                                 ? `Top-${Number(latest?.top_n || 4)} basket won ${formatSignedMoney(pnl)}`
                                 : `Top-${Number(latest?.top_n || 4)} basket lost ${formatSignedMoney(pnl)}`,
-                            pnl > 0 ? 'good' : 'bad'
+                            won ? 'good' : 'bad'
                         );
                     }
+                } else if (!window.SERVER_EXECUTION?.top4AutoCycleRunning) {
+                    // No Top-4 basket exists yet for this session.
+                    renderServerTopNRecovery(recovery);
+
+                    const heroResult = document.getElementById('serverTopNHeroResult');
+                    const heroPnl = document.getElementById('serverTopNHeroPnl');
+                    const heroMeta = document.getElementById('serverTopNHeroMeta');
+                    const smallPnl = document.getElementById('serverTopNSessionPnl');
+
+                    if (heroResult) {
+                        heroResult.textContent = 'READY';
+                        heroResult.className =
+                            'mt-1 text-3xl font-black text-slate-200';
+                    }
+                    if (heroPnl) {
+                        heroPnl.textContent = '$0.00';
+                        heroPnl.className =
+                            'mt-1 text-3xl font-black text-slate-200';
+                    }
+                    if (smallPnl) {
+                        smallPnl.textContent = '$0.00';
+                        smallPnl.className =
+                            'text-sm font-black text-white';
+                    }
+                    if (heroMeta) {
+                        heroMeta.textContent =
+                            'New Top-4 trade ready.';
+                    }
                 }
+
                 if (recovery) {
+                    renderServerTopNRecovery(recovery);
                     window.SERVER_EXECUTION.topNRecovery = recovery;
                 }
 
@@ -13998,7 +14051,16 @@ function toggleServerContinuousResearch() {
             const inFlight =
                 window.SERVER_EXECUTION?.topNExecutionInFlight === true;
 
-            if (!inFlight) {
+            const latest = window.SERVER_EXECUTION?.topNLatest || null;
+            const latestStatus = String(latest?.status || '').toUpperCase();
+            const terminalResultVisible =
+                !!latest &&
+                (
+                    latestStatus === 'SETTLED' ||
+                    latestStatus === 'SETTLEMENT_RECONCILE_REQUIRED'
+                );
+
+            if (!inFlight && !terminalResultVisible) {
                 if (!state.ready) {
                     setServerTopNStatus(
                         'WARMING',
@@ -14150,6 +14212,11 @@ function toggleServerContinuousResearch() {
                     window.SERVER_EXECUTION.topNExecutionInFlight = true;
                     window.SERVER_EXECUTION.topNExecutionStage =
                         `Preparing Top-${cfg.top_n} contracts…`;
+                }
+
+                if (cfg.top_n === 4) {
+                    resetServerTopNTradeDisplay();
+                    window.SERVER_EXECUTION.topNLatest = null;
                 }
 
                 setServerTopNStatus(
