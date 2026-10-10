@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V17_CAPITAL_PLANNER"
+    VERSION = "TOP4_RECOVERY_V18_REAL_EXECUTION_STATE"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -465,6 +465,12 @@ class Top4BasketService:
 
                 client = await engine._client(s.user_id, s.account_id)
 
+                # Publish the real Top-4 execution phase. Without this the
+                # server panel remains on TOPN_*_WARMING during a live basket.
+                s.phase = f"TOP4_{mode}_PREPARING"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
                 async def proposal_then_buy(leg):
                     proposal = await client.proposal_digitmatch(
                         symbol=s.symbol,
@@ -597,6 +603,10 @@ class Top4BasketService:
                 self.live[basket_id] = runtime
 
                 if opened:
+                    s.phase = f"TOP4_{mode}_OPEN"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                     task = asyncio.create_task(
                         self._settle_demo_basket(
                             sid=s.id,
@@ -735,6 +745,30 @@ class Top4BasketService:
             for leg in runtime.get("legs", [])
             if leg.get("status") == "LOSS"
         ]
+
+        # Mirror Top-4 settlement into the shared session phase so the main
+        # server card shows the real lifecycle rather than stale warming text.
+        db = SessionLocal()
+        try:
+            s = db.get(TradingSession, int(sid))
+            if s:
+                mode = str(
+                    runtime.get("account_mode")
+                    or s.account_mode
+                    or "DEMO"
+                ).upper()
+
+                if unresolved:
+                    s.phase = f"TOP4_{mode}_RECONCILE"
+                elif float(runtime.get("net_profit") or 0) > 0:
+                    s.phase = f"TOP4_{mode}_BASKET_WIN"
+                else:
+                    s.phase = f"TOP4_{mode}_BASKET_LOSS"
+
+                s.updated_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
 
 
     def capital_plan(self, starting_leg_stake):

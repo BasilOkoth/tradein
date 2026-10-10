@@ -11304,6 +11304,40 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                     resultClass = 'text-xs font-bold text-purple-300';
                     break;
 
+                case 'TOP4_REAL_PREPARING':
+                case 'TOP4_DEMO_PREPARING':
+                    result = 'TOP-4 PREPARING ⚡';
+                    status = 'Preparing four simultaneous DigitMatch contracts';
+                    action = phase.includes('REAL')
+                        ? 'REAL basket confirmed · preparing proposals and purchases'
+                        : 'Preparing DEMO Top-4 basket';
+                    resultClass = 'text-lg font-black text-amber-300';
+                    break;
+
+                case 'TOP4_REAL_OPEN':
+                case 'TOP4_DEMO_OPEN':
+                    result = 'TOP-4 OPEN ⚡';
+                    status = 'Four simultaneous DigitMatch contracts are open';
+                    action = 'Waiting for basket settlement';
+                    resultClass = 'text-lg font-black text-amber-300';
+                    break;
+
+                case 'TOP4_REAL_BASKET_WIN':
+                case 'TOP4_DEMO_BASKET_WIN':
+                    result = 'WIN ✅';
+                    status = 'Top-4 basket settled profitably';
+                    action = 'Basket complete';
+                    resultClass = 'text-lg font-black text-emerald-400';
+                    break;
+
+                case 'TOP4_REAL_BASKET_LOSS':
+                case 'TOP4_DEMO_BASKET_LOSS':
+                    result = 'LOSS ❌';
+                    status = 'Top-4 basket settled at a loss';
+                    action = 'Review recovery round before the next basket';
+                    resultClass = 'text-lg font-black text-rose-400';
+                    break;
+
                 case 'WAITING_REAL_CONFIRMATION':
                     result = 'CONFIRM REQUIRED';
                     status = hasDigit
@@ -13814,6 +13848,28 @@ function toggleServerContinuousResearch() {
 
                 if (latest) {
                     window.SERVER_EXECUTION.topNLatest = latest;
+
+                    const latestStatus = String(
+                        latest?.status || ''
+                    ).toUpperCase();
+
+                    if (
+                        latestStatus === 'SETTLED' ||
+                        latestStatus === 'SETTLEMENT_RECONCILE_REQUIRED'
+                    ) {
+                        window.SERVER_EXECUTION.topNExecutionInFlight = false;
+                        window.SERVER_EXECUTION.topNExecutionStage = null;
+
+                        const pnl = Number(latest?.net_profit || 0);
+
+                        setServerTopNStatus(
+                            pnl > 0 ? 'WIN' : 'LOSS',
+                            pnl > 0
+                                ? `Top-${Number(latest?.top_n || 4)} basket won ${formatSignedMoney(pnl)}`
+                                : `Top-${Number(latest?.top_n || 4)} basket lost ${formatSignedMoney(pnl)}`,
+                            pnl > 0 ? 'good' : 'bad'
+                        );
+                    }
                 }
                 if (recovery) {
                     window.SERVER_EXECUTION.topNRecovery = recovery;
@@ -13901,23 +13957,35 @@ function toggleServerContinuousResearch() {
             ).toUpperCase();
 
             if (btn) {
+                const inFlight =
+                    window.SERVER_EXECUTION?.topNExecutionInFlight === true;
+
                 const capitalOk =
                     window.SERVER_EXECUTION?.top4CapitalSufficient !== false;
 
-                btn.disabled =
-                    !state.ready ||
-                    (state.topN === 4 && !capitalOk);
-
-                btn.classList.toggle('opacity-50', btn.disabled);
-                btn.classList.toggle('cursor-not-allowed', btn.disabled);
-
-                btn.textContent = !state.ready
-                    ? `Warming ${state.historyCount}/${state.minimumHistory}`
-                    : (
-                        state.topN === 4 && !capitalOk
-                            ? 'Insufficient Capital'
-                            : `Start Top-${state.topN} Trade`
+                if (inFlight) {
+                    btn.disabled = true;
+                    btn.classList.add('opacity-50', 'cursor-not-allowed');
+                    btn.textContent = String(
+                        window.SERVER_EXECUTION?.topNExecutionStage ||
+                        'Preparing trade…'
                     );
+                } else {
+                    btn.disabled =
+                        !state.ready ||
+                        (state.topN === 4 && !capitalOk);
+
+                    btn.classList.toggle('opacity-50', btn.disabled);
+                    btn.classList.toggle('cursor-not-allowed', btn.disabled);
+
+                    btn.textContent = !state.ready
+                        ? `Warming ${state.historyCount}/${state.minimumHistory}`
+                        : (
+                            state.topN === 4 && !capitalOk
+                                ? 'Insufficient Capital'
+                                : `Start Top-${state.topN} Trade`
+                        );
+                }
             }
 
             if (armBtn) {
@@ -13927,19 +13995,24 @@ function toggleServerContinuousResearch() {
                     : 'Warm Top-N Feed';
             }
 
-            if (!state.ready) {
-                setServerTopNStatus(
-                    'WARMING',
-                    `Server DigitScore ${state.historyCount}/${state.minimumHistory} · ` +
-                    `Top-${state.topN} execution unlocks automatically when ready.`,
-                    'warn'
-                );
-            } else {
-                setServerTopNStatus(
-                    'READY',
-                    `Top-${state.topN} ranking ready · ${state.rankingCount} ranked digits available.`,
-                    'good'
-                );
+            const inFlight =
+                window.SERVER_EXECUTION?.topNExecutionInFlight === true;
+
+            if (!inFlight) {
+                if (!state.ready) {
+                    setServerTopNStatus(
+                        'WARMING',
+                        `Server DigitScore ${state.historyCount}/${state.minimumHistory} · ` +
+                        `Top-${state.topN} execution unlocks automatically when ready.`,
+                        'warn'
+                    );
+                } else {
+                    setServerTopNStatus(
+                        'READY',
+                        `Top-${state.topN} ranking ready · ${state.rankingCount} ranked digits available.`,
+                        'good'
+                    );
+                }
             }
         }
 
@@ -14060,6 +14133,7 @@ function toggleServerContinuousResearch() {
                     );
 
                     if (!ok) {
+                        window.SERVER_EXECUTION.topNExecutionStage = null;
                         setServerTopNStatus(
                             'CANCELLED',
                             'REAL simultaneous purchase was not submitted.',
@@ -14069,13 +14143,21 @@ function toggleServerContinuousResearch() {
                     }
 
                     endpoint = `/sessions/${s.sessionId}/top4/execute-real`;
+                    window.SERVER_EXECUTION.topNExecutionInFlight = true;
+                    window.SERVER_EXECUTION.topNExecutionStage =
+                        'Preparing 4 REAL contracts…';
+                } else {
+                    window.SERVER_EXECUTION.topNExecutionInFlight = true;
+                    window.SERVER_EXECUTION.topNExecutionStage =
+                        `Preparing Top-${cfg.top_n} contracts…`;
                 }
 
                 setServerTopNStatus(
-                    'SUBMITTING',
-                    `Submitting Top-${cfg.top_n} basket · $${cfg.basket_stake.toFixed(2)} total`,
+                    'PREPARING',
+                    `Preparing Top-${cfg.top_n} contracts · $${cfg.basket_stake.toFixed(2)} basket`,
                     'warn'
                 );
+                renderServerTopNReadiness();
 
                 const result = await serverExecRequest(
                     endpoint,
@@ -14083,6 +14165,17 @@ function toggleServerContinuousResearch() {
                         method: 'POST',
                         body: cfg
                     }
+                );
+
+                window.SERVER_EXECUTION.topNExecutionStage =
+                    mode === 'REAL'
+                        ? 'REAL basket open · settling…'
+                        : 'Basket open · settling…';
+
+                setServerTopNStatus(
+                    'OPEN',
+                    `Top-${cfg.top_n} basket opened · waiting for settlement`,
+                    'warn'
                 );
 
                 await pollServerExecutionState();
@@ -14100,11 +14193,11 @@ function toggleServerContinuousResearch() {
                     .filter(Number.isInteger);
 
                 setServerTopNStatus(
-                    'SUBMITTED',
+                    'OPEN',
                     digits.length
-                        ? `Top-${cfg.top_n} submitted · digits ${digits.join(', ')}`
-                        : `Top-${cfg.top_n} simultaneous basket submitted`,
-                    'good'
+                        ? `Top-${cfg.top_n} open · digits ${digits.join(', ')} · settling`
+                        : `Top-${cfg.top_n} basket open · settling`,
+                    'warn'
                 );
 
                 log(
@@ -14124,6 +14217,9 @@ function toggleServerContinuousResearch() {
                 });
 
             } catch (e) {
+                window.SERVER_EXECUTION.topNExecutionInFlight = false;
+                window.SERVER_EXECUTION.topNExecutionStage = null;
+
                 const message = String(e?.message || e);
 
                 if (

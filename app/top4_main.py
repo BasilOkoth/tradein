@@ -135,7 +135,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "TOP4_RECOVERY_V17_CAPITAL_PLANNER",
+        "topn_mode": "TOP4_RECOVERY_V18_REAL_EXECUTION_STATE",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,
