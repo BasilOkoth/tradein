@@ -31,19 +31,17 @@ class DerivWS:
         self._connect_lock = asyncio.Lock()
         self._callback_tasks = set()
 
-        # Proposal flow control.
-        # Every proposal request on this account/socket is serialized here.
         self._proposal_lock = asyncio.Lock()
         self._last_proposal_at = 0.0
-
-        # 350 ms was too aggressive once prefetch + fallback were both active.
-        # 900 ms still allows a proposal to be prepared inside an R_10 2-second
-        # tick window, while greatly reducing Deriv proposal bursts.
         self._proposal_min_interval = 0.90
-
-        # Global cooldown shared by every proposal caller on this socket.
         self._proposal_cooldown_until = 0.0
         self._rate_limit_streak = 0
+
+        # Dedicated Top-N proposal batch lane.
+        # It avoids duplicate/fallback proposal storms while allowing a tighter
+        # controlled cadence for one intentional basket.
+        self._topn_batch_lock = asyncio.Lock()
+        self._topn_batch_interval = 0.45
 
     def is_open(self) -> bool:
         if not self.ws:
@@ -59,11 +57,9 @@ class DerivWS:
     async def connect(self):
         if self.is_open():
             return
-
         async with self._connect_lock:
             if self.is_open():
                 return
-
             self.ws = await websockets.connect(
                 self.url,
                 ping_interval=20,
@@ -111,7 +107,6 @@ class DerivWS:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # One subscriber must never kill the shared WebSocket reader.
             pass
 
     def _schedule_subscription_callback(self, callback, data: dict):
@@ -126,10 +121,6 @@ class DerivWS:
         sub_id = sub.get("id")
         if not sub_id:
             return
-
-        # CRITICAL: never await strategy/settlement callbacks in _reader().
-        # Those callbacks can immediately request the next proposal/buy, whose
-        # response must be consumed by this same reader task.
         for callback in list(self.subscriptions.get(str(sub_id), ())):
             self._schedule_subscription_callback(callback, data)
 
@@ -145,9 +136,6 @@ class DerivWS:
                         future.set_result(data)
 
                 if req_id in self.pending_subscription_callbacks:
-                    # Deriv can answer a very short-lived contract request before
-                    # assigning/returning a subscription id. Do not throw the
-                    # callback away unless an id was actually returned.
                     callback = self.pending_subscription_callbacks[req_id]
                     sub = data.get("subscription") or {}
                     sub_id = sub.get("id")
@@ -214,15 +202,13 @@ class DerivWS:
         return data
 
     async def _reset_after_timeout(self):
-        # Only used by idempotent/read-only requests such as proposal.
-        # BUY is intentionally never auto-retried.
         try:
             await self.close()
         except Exception:
             self.ws = None
         await self.connect()
 
-    async def proposal_digitmatch(
+    def _proposal_payload(
         self,
         symbol: str,
         digit: int,
@@ -230,7 +216,7 @@ class DerivWS:
         duration: int = 1,
         currency: str = "USD",
     ):
-        payload = {
+        return {
             "proposal": 1,
             "amount": round(float(amount), 2),
             "basis": "stake",
@@ -242,24 +228,27 @@ class DerivWS:
             "underlying_symbol": str(symbol),
         }
 
-        # ONE proposal lane per account/socket.
-        #
-        # The previous build allowed a prefetch request to remain in-flight and,
-        # after 800 ms, the engine could start a fallback proposal for the same
-        # recovery. Even though requests were serialized, that still generated
-        # too many proposal calls in a short period and triggered Deriv RateLimit.
-        #
-        # This client therefore:
-        #   1) serializes every proposal request,
-        #   2) enforces minimum spacing,
-        #   3) applies a shared adaptive cooldown after RateLimit,
-        #   4) treats RateLimit as recoverable instead of immediately failing.
+    async def proposal_digitmatch(
+        self,
+        symbol: str,
+        digit: int,
+        amount: float,
+        duration: int = 1,
+        currency: str = "USD",
+    ):
+        payload = self._proposal_payload(
+            symbol=symbol,
+            digit=digit,
+            amount=amount,
+            duration=duration,
+            currency=currency,
+        )
+
         async with self._proposal_lock:
             timeout_retry_used = False
 
             while True:
                 now = time.monotonic()
-
                 spacing_wait = self._proposal_min_interval - (
                     now - self._last_proposal_at
                 )
@@ -272,8 +261,6 @@ class DerivWS:
                 try:
                     self._last_proposal_at = time.monotonic()
                     data = await self.request(payload)
-
-                    # Success: reset throttling state.
                     self._rate_limit_streak = 0
                     self._proposal_cooldown_until = 0.0
                     return data
@@ -282,34 +269,98 @@ class DerivWS:
                     text = str(exc).lower()
 
                     if "timed out" in text and not timeout_retry_used:
-                        # Proposal is read-only, so reconnecting once is safe.
                         timeout_retry_used = True
                         await self._reset_after_timeout()
                         continue
 
                     if "ratelimit" in text or "rate limit" in text:
-                        # Recoverable back-pressure from Deriv.
                         self._rate_limit_streak = min(
                             self._rate_limit_streak + 1,
                             6,
                         )
-
                         backoff_table = (1.5, 2.5, 4.0, 6.0, 8.0, 10.0)
                         backoff = backoff_table[
                             self._rate_limit_streak - 1
                         ]
-
                         self._proposal_cooldown_until = (
                             time.monotonic() + backoff
                         )
-
-                        # Hold the proposal lock during backoff. This is
-                        # intentional: no other prefetch/fallback should send
-                        # another proposal while Deriv is throttling us.
                         await asyncio.sleep(backoff)
                         continue
 
                     raise
+
+    async def proposal_digitmatch_batch(
+        self,
+        symbol: str,
+        legs: list,
+        duration: int = 1,
+        currency: str = "USD",
+    ):
+        """
+        Prepare one intentional Top-N basket with controlled proposal cadence.
+
+        Normal single-target proposals keep the conservative 900ms lane.
+        A Top-N basket uses a dedicated 450ms cadence because:
+        - the basket has a fixed known request count,
+        - there is no duplicate prefetch/fallback request,
+        - requests are still serialized,
+        - RateLimit falls back to the conservative 900ms cadence.
+        """
+        async with self._topn_batch_lock:
+            results = []
+            interval = self._topn_batch_interval
+
+            for index, leg in enumerate(legs):
+                payload = self._proposal_payload(
+                    symbol=symbol,
+                    digit=int(leg["digit"]),
+                    amount=float(leg["stake"]),
+                    duration=duration,
+                    currency=currency,
+                )
+
+                if index > 0:
+                    await asyncio.sleep(interval)
+
+                try:
+                    proposal = await self.request(payload, timeout=10)
+                    results.append({
+                        "leg": leg,
+                        "proposal": proposal,
+                        "error": None,
+                    })
+
+                except RuntimeError as exc:
+                    text = str(exc).lower()
+
+                    if "ratelimit" in text or "rate limit" in text:
+                        # One controlled fallback only. Do not create a request storm.
+                        await asyncio.sleep(1.5)
+
+                        try:
+                            proposal = await self.request(payload, timeout=10)
+                            results.append({
+                                "leg": leg,
+                                "proposal": proposal,
+                                "error": None,
+                            })
+                            # Remaining requests use conservative spacing.
+                            interval = self._proposal_min_interval
+                        except Exception as retry_exc:
+                            results.append({
+                                "leg": leg,
+                                "proposal": None,
+                                "error": retry_exc,
+                            })
+                    else:
+                        results.append({
+                            "leg": leg,
+                            "proposal": None,
+                            "error": exc,
+                        })
+
+            return results
 
     async def buy(self, proposal_id: str, price: float, *, demo: bool = False):
         if not demo:
@@ -351,18 +402,11 @@ class DerivWS:
         if sub_id:
             return str(sub_id)
 
-        # A 1-tick contract can settle so quickly that Deriv returns the
-        # proposal_open_contract payload without a subscription id. That is
-        # still a valid contract response, not a fatal WebSocket error.
         req_id = data.get("req_id")
         if req_id is not None:
             self.pending_subscription_callbacks.pop(req_id, None)
 
-        # Do not await this callback here. engine.step() can already own the
-        # per-session lock, while the settlement callback also needs it.
         asyncio.create_task(callback(data))
-
-        # None tells the engine to use the contract-status polling fallback.
         return None
 
     async def subscribe_ticks(self, symbol: str, callback: MessageCallback) -> str:

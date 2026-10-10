@@ -471,50 +471,94 @@ class Top4BasketService:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
-                async def proposal_then_buy(leg):
-                    proposal = await client.proposal_digitmatch(
-                        symbol=s.symbol,
-                        digit=int(leg["digit"]),
-                        amount=float(leg["stake"]),
-                        duration=1,
-                        currency=currency,
-                    )
+                proposal_batch_started = datetime.utcnow()
+
+                proposal_rows = await client.proposal_digitmatch_batch(
+                    symbol=s.symbol,
+                    legs=frozen_legs,
+                    duration=1,
+                    currency=currency,
+                )
+
+                prepared = []
+                preparation_failures = []
+
+                for row in proposal_rows:
+                    leg = row.get("leg") or {}
+                    error = row.get("error")
+                    proposal = row.get("proposal") or {}
+
+                    if error is not None:
+                        preparation_failures.append(
+                            f"rank #{leg.get('rank')}: {error}"
+                        )
+                        continue
+
                     p = proposal.get("proposal") or {}
                     proposal_id = str(p.get("id") or "")
-                    if not proposal_id:
-                        raise RuntimeError(f"No proposal for rank #{leg['rank']}")
 
-                    ask_price = float(p.get("ask_price") or leg["stake"])
+                    if not proposal_id:
+                        preparation_failures.append(
+                            f"rank #{leg.get('rank')}: no proposal id"
+                        )
+                        continue
+
+                    prepared.append({
+                        **leg,
+                        "proposal_id": proposal_id,
+                        "ask_price": float(
+                            p.get("ask_price") or leg["stake"]
+                        ),
+                        "payout": float(p.get("payout") or 0),
+                        "spot": p.get("spot"),
+                        "proposal_received_at": datetime.utcnow().isoformat(),
+                    })
+
+                # Do not submit a partial intentional Top-4 basket if proposal
+                # preparation itself failed. This avoids knowingly starting
+                # with fewer covered digits.
+                if len(prepared) != top_n:
+                    raise HTTPException(
+                        502,
+                        f"Prepared {len(prepared)}/{top_n} Top-{top_n} proposals. "
+                        + " | ".join(preparation_failures[:top_n]),
+                    )
+
+                s.phase = f"TOP4_{mode}_BUYING"
+                s.updated_at = datetime.utcnow()
+                db.commit()
+
+                async def buy_prepared(item):
                     if mode == "REAL":
                         buy_result = await client.request(
                             {
-                                "buy": proposal_id,
-                                "price": float(ask_price),
-                            }
+                                "buy": item["proposal_id"],
+                                "price": float(item["ask_price"]),
+                            },
+                            timeout=10,
                         )
                     else:
                         buy_result = await client.buy(
-                            proposal_id,
-                            ask_price,
+                            item["proposal_id"],
+                            item["ask_price"],
                             demo=True,
                         )
 
                     return {
-                        **leg,
-                        "proposal_id": proposal_id,
-                        "ask_price": ask_price,
-                        "payout": float(p.get("payout") or 0),
-                        "spot": p.get("spot"),
-                        "proposal_received_at": datetime.utcnow().isoformat(),
+                        **item,
                         "deriv_buy": buy_result,
                     }
 
+                # All four BUY requests are launched together after every quote
+                # is prepared. This keeps the actual Top-4 contract opening much
+                # more tightly synchronized than proposal->buy per leg.
                 results = await asyncio.gather(
-                    *[proposal_then_buy(leg) for leg in frozen_legs],
+                    *[buy_prepared(item) for item in prepared],
                     return_exceptions=True,
                 )
 
-                failures = []
+
+                failures = list(preparation_failures)
                 opened = []
 
                 for index, result in enumerate(results):

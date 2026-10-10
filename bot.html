@@ -13467,6 +13467,55 @@ function toggleServerContinuousResearch() {
         }
 
 
+        function scheduleRealTop4RecoveryConfirmation(state) {
+            const s = window.SERVER_EXECUTION;
+            if (!s?.enabled) return;
+
+            const mode = String(
+                s.state?.account_mode ||
+                sessionStorage.getItem('selectedAccountMode') ||
+                localStorage.getItem('selectedAccountMode') ||
+                ''
+            ).toUpperCase();
+
+            if (mode !== 'REAL') return;
+            if (s.topNExecutionInFlight === true) return;
+
+            const nextRound = Number(state?.next_round || 0);
+            const completed = Number(state?.rounds_completed || 0);
+
+            if (
+                state?.won === true ||
+                state?.final_loss === true ||
+                completed <= 0 ||
+                nextRound <= 1 ||
+                nextRound > 6
+            ) return;
+
+            const key = [
+                s.sessionId,
+                nextRound,
+                Number(state?.trade_pnl || 0).toFixed(2),
+                Number(state?.next_basket_stake || 0).toFixed(2)
+            ].join('|');
+
+            if (s.lastRealRecoveryPromptKey === key) return;
+            s.lastRealRecoveryPromptKey = key;
+
+            setTimeout(() => {
+                if (window.SERVER_EXECUTION?.topNExecutionInFlight === true) {
+                    return;
+                }
+                executeServerTopN().catch(err => {
+                    log(
+                        `❌ REAL Top-4 recovery confirmation failed: ${err.message}`,
+                        'ERROR'
+                    );
+                });
+            }, 150);
+        }
+
+
         function renderServerTop4RealRecovery(state, latest, recovery) {
             const hero = document.getElementById('serverTopNHero');
             const heroResult = document.getElementById('serverTopNHeroResult');
@@ -13587,6 +13636,8 @@ function toggleServerContinuousResearch() {
                     `Round ${nextRound}/6 ready · $${nextLeg.toFixed(2)}/digit · $${nextBasket.toFixed(2)} basket`,
                     'warn'
                 );
+
+                scheduleRealTop4RecoveryConfirmation(state);
 
             } else {
                 if (heroResult) {
@@ -14393,20 +14444,26 @@ function toggleServerContinuousResearch() {
                           `Stake per digit: $${Number(recovery.next_leg_stake || 0).toFixed(2)}\n`
                         : '';
 
+                    const roundNo = Number(
+                        realRecovery?.next_round ||
+                        recovery?.round ||
+                        1
+                    );
+
                     const ok = confirm(
-                        `Confirm REAL simultaneous Top-${cfg.top_n} DigitMatch basket?\n\n` +
+                        `REAL TOP-4 · ROUND ${roundNo}/6\n\n` +
                         recoveryLine +
-                        `Current ranked digits: ${digits.length ? digits.join(', ') : 'Top-ranked digits'}\n` +
-                        `Total basket stake: $${cfg.basket_stake.toFixed(2)}\n\n` +
-                        `This confirmation authorizes this basket only.`
+                        `Digits: ${digits.length ? digits.join(', ') : 'Current Top-4'}\n` +
+                        `Basket: $${cfg.basket_stake.toFixed(2)}\n\n` +
+                        `Press OK to place this round now.`
                     );
 
                     if (!ok) {
                         window.SERVER_EXECUTION.topNExecutionStage = null;
                         setServerTopNStatus(
-                            'CANCELLED',
-                            'REAL simultaneous purchase was not submitted.',
-                            'normal'
+                            'RECOVERY READY',
+                            `Round ${roundNo}/6 is ready. Press Confirm Next Round when you want to continue.`,
+                            'warn'
                         );
                         return;
                     }
@@ -14414,16 +14471,17 @@ function toggleServerContinuousResearch() {
                     endpoint = `/sessions/${s.sessionId}/top4/execute-real`;
                     window.SERVER_EXECUTION.topNExecutionInFlight = true;
                     window.SERVER_EXECUTION.topNExecutionStage =
-                        'Preparing 4 REAL contracts…';
+                        'Preparing Top-4 quotes…';
                 } else {
                     window.SERVER_EXECUTION.topNExecutionInFlight = true;
                     window.SERVER_EXECUTION.topNExecutionStage =
-                        `Preparing Top-${cfg.top_n} contracts…`;
+                        `Preparing Top-${cfg.top_n} quotes…`;
                 }
 
                 if (cfg.top_n === 4) {
                     resetServerTopNTradeDisplay();
                     window.SERVER_EXECUTION.topNLatest = null;
+                    window.SERVER_EXECUTION.lastRealRecoveryPromptKey = null;
                 }
 
                 setServerTopNStatus(
