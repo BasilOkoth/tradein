@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V10"
+    VERSION = "TOP4_RECOVERY_V11_SERVER_WARM"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -287,13 +287,12 @@ class Top4BasketService:
             ),
         }
 
-    async def arm_real(self, *, user_id, sid):
+    async def arm(self, *, user_id, sid):
         """
-        Prepare the OAuth-authenticated REAL session for Top-N use without
-        starting the old single-target worker.
+        Attach the authenticated server canonical tick stream for Top-N scoring.
 
-        This attaches the server canonical tick stream so DigitScore can warm.
-        No proposal or BUY is sent here.
+        Works for both DEMO and REAL sessions. This only warms DigitScore:
+        it never sends a proposal or BUY.
         """
         async with self._locks[int(sid)]:
             db = SessionLocal()
@@ -310,10 +309,10 @@ class Top4BasketService:
                     or ""
                 ).upper()
 
-                if mode != "REAL":
+                if mode not in {"DEMO", "REAL"}:
                     raise HTTPException(
                         409,
-                        "This session is not a REAL account.",
+                        "Top-N warming requires a DEMO or REAL Deriv account.",
                     )
 
                 client = await engine._client(
@@ -329,10 +328,12 @@ class Top4BasketService:
                     client=client,
                 )
 
+                # Do not start the legacy single-target worker. Top-N warming
+                # only needs the canonical server tick stream.
                 s.running = False
                 s.paused = False
                 s.pending_real_confirmation = False
-                s.phase = "TOPN_REAL_WARMING"
+                s.phase = f"TOPN_{mode}_WARMING"
                 s.last_error = None
                 s.updated_at = datetime.utcnow()
                 db.commit()
@@ -365,13 +366,31 @@ class Top4BasketService:
                         or 10
                     ),
                     "message": (
-                        "REAL Top-N server feed armed. "
+                        f"{mode} Top-N server feed armed. "
                         "No trade has been sent."
                     ),
                 }
 
             finally:
                 db.close()
+
+    async def arm_real(self, *, user_id, sid):
+        """Backward-compatible REAL-only Top-N warm endpoint."""
+        db = SessionLocal()
+        try:
+            s = self._owned_session(db, user_id, sid)
+            if str(s.account_mode or "").upper() != "REAL":
+                raise HTTPException(
+                    409,
+                    "This session is not a REAL account.",
+                )
+        finally:
+            db.close()
+
+        return await self.arm(
+            user_id=user_id,
+            sid=sid,
+        )
 
     async def execute_now(self, *, user_id, sid, basket_stake, top_n=7, execute_real_now=False):
         top_n = self._validate_top_n(top_n)

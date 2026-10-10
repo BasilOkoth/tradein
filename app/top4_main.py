@@ -22,6 +22,21 @@ def top4_status(
     )
 
 
+@app.post("/sessions/{sid}/top4/arm")
+async def topn_arm(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    """
+    Warm the server-side canonical Top-N tick feed for either DEMO or REAL.
+    No proposal or purchase is sent.
+    """
+    return await top4_baskets.arm(
+        user_id=user_id,
+        sid=sid,
+    )
+
+
 @app.post("/sessions/{sid}/top4/execute")
 async def topn_execute_demo(
     sid: int,
@@ -42,6 +57,7 @@ async def topn_arm_real(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
+    # Kept for older frontends.
     return await top4_baskets.arm_real(
         user_id=user_id,
         sid=sid,
@@ -80,7 +96,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "SIMULTANEOUS_REAL_START_FIXED",
+        "topn_mode": "TOP4_RECOVERY_V11_SERVER_WARM",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,

@@ -675,7 +675,7 @@
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
     </div>
     <div class="flex items-end">
-      <button id="serverTopNArmBtn" type="button" onclick="armServerTopNReal()"
+      <button id="serverTopNArmBtn" type="button" onclick="armServerTopNFeed()"
         class="server-exec-btn w-full bg-indigo-700 hover:bg-indigo-600">
         Warm REAL Feed
       </button>
@@ -12418,6 +12418,7 @@ function toggleServerContinuousResearch() {
 
                 renderServerExecutionState();
                 renderServerTopNReadiness();
+                await ensureServerTopNFeedWarm();
                 await pollServerTopNResult();
                 } catch (e) {
                 const badge = serverExecEl('serverExecBadge');
@@ -12803,7 +12804,7 @@ function toggleServerContinuousResearch() {
             }
         }
 
-        async function armServerTopNReal() {
+        async function armServerTopNFeed({ silent = false } = {}) {
             const s = window.SERVER_EXECUTION;
 
             try {
@@ -12823,46 +12824,52 @@ function toggleServerContinuousResearch() {
                     s.state?.account_mode ||
                     sessionStorage.getItem('selectedAccountMode') ||
                     localStorage.getItem('selectedAccountMode') ||
-                    ''
+                    'DEMO'
                 ).toUpperCase();
 
-                if (mode !== 'REAL') {
+                if (!silent) {
                     setServerTopNStatus(
-                        'DEMO READY',
-                        'DEMO does not require REAL feed warming.',
-                        'good'
+                        'WARMING',
+                        `Connecting the ${mode} server Top-N tick feed. No trade is sent.`,
+                        'warn'
                     );
-                    return;
                 }
 
-                setServerTopNStatus(
-                    'WARMING',
-                    'Connecting the REAL server tick feed. No purchase is sent.',
-                    'warn'
-                );
-
                 const result = await serverExecRequest(
-                    `/sessions/${s.sessionId}/top4/arm-real`,
+                    `/sessions/${s.sessionId}/top4/arm`,
                     { method: 'POST' }
                 );
 
-                await pollServerExecutionState();
+                // Prevent repeated arm calls while the same feed is warming.
+                s.topNWarmArmedAt = Date.now();
 
                 const have = Number(result?.history_count || 0);
                 const need = Number(result?.minimum_history || 10);
 
-                setServerTopNStatus(
-                    result?.topn_ready ? 'READY' : 'WARMING',
-                    result?.topn_ready
-                        ? `REAL Top-N ready · score history ${have}/${need}`
-                        : `REAL Top-N warming · score history ${have}/${need}`,
-                    result?.topn_ready ? 'good' : 'warn'
-                );
+                if (!silent) {
+                    setServerTopNStatus(
+                        result?.topn_ready ? 'READY' : 'WARMING',
+                        result?.topn_ready
+                            ? `${mode} Top-N ready · score history ${have}/${need}`
+                            : `${mode} Top-N warming · score history ${have}/${need}`,
+                        result?.topn_ready ? 'good' : 'warn'
+                    );
+                }
+
+                return result;
 
             } catch (e) {
-                setServerTopNStatus('ERROR', e.message, 'bad');
-                log(`❌ Top-N warm-up failed: ${e.message}`, 'ERROR');
+                if (!silent) {
+                    setServerTopNStatus('ERROR', e.message, 'bad');
+                    log(`❌ Top-N warm-up failed: ${e.message}`, 'ERROR');
+                }
+                throw e;
             }
+        }
+
+        // Compatibility for any older inline call.
+        async function armServerTopNReal() {
+            return armServerTopNFeed();
         }
 
 
@@ -13123,6 +13130,34 @@ function toggleServerContinuousResearch() {
             };
         }
 
+
+        async function ensureServerTopNFeedWarm() {
+            const s = window.SERVER_EXECUTION || {};
+            const st = s.state || {};
+
+            if (!s.enabled || !s.sessionId || !st.account_mode) return;
+
+            let readiness;
+            try {
+                readiness = getServerTopNReadiness();
+            } catch (_) {
+                return;
+            }
+
+            if (readiness.ready) return;
+
+            // Avoid hammering /arm from the 250ms state poll.
+            const lastArm = Number(s.topNWarmArmedAt || 0);
+            if (Date.now() - lastArm < 10000) return;
+
+            s.topNWarmArmedAt = Date.now();
+
+            try {
+                await armServerTopNFeed({ silent: true });
+            } catch (_) {}
+        }
+
+
         function renderServerTopNReadiness() {
             const btn = document.getElementById('serverTopNExecuteBtn');
             const armBtn = document.getElementById('serverTopNArmBtn');
@@ -13153,13 +13188,16 @@ function toggleServerContinuousResearch() {
             }
 
             if (armBtn) {
-                armBtn.classList.toggle('hidden', mode !== 'REAL');
+                armBtn.classList.remove('hidden');
+                armBtn.textContent = state.ready
+                    ? 'Top-N Feed Ready'
+                    : 'Warm Top-N Feed';
             }
 
             if (!state.ready) {
                 setServerTopNStatus(
                     'WARMING',
-                    `DigitScore history ${state.historyCount}/${state.minimumHistory} · ` +
+                    `Server DigitScore ${state.historyCount}/${state.minimumHistory} · ` +
                     `Top-${state.topN} execution unlocks automatically when ready.`,
                     'warn'
                 );
@@ -13200,8 +13238,8 @@ function toggleServerContinuousResearch() {
 
                 let readiness = getServerTopNReadiness();
 
-                if (!readiness.ready && mode === 'REAL') {
-                    await armServerTopNReal();
+                if (!readiness.ready) {
+                    await armServerTopNFeed({ silent: false });
                     await pollServerExecutionState();
 
                     readiness = getServerTopNReadiness();
@@ -13210,7 +13248,7 @@ function toggleServerContinuousResearch() {
                     if (!readiness.ready) {
                         setServerTopNStatus(
                             'WARMING',
-                            `DigitScore is warming ${readiness.historyCount}/${readiness.minimumHistory}. ` +
+                            `Server DigitScore is warming ${readiness.historyCount}/${readiness.minimumHistory}. ` +
                             `No trade was submitted. Execute unlocks automatically when ready.`,
                             'warn'
                         );

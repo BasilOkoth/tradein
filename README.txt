@@ -1,21 +1,22 @@
-TRADEIN TOP-4 RECOVERY V6
+TRADEIN TOP-N SERVER WARM V7
+
+Fixes DEMO Top-N stuck at Warming 0/10.
+
+Root cause:
+- Browser/public ticks do not populate server DigitScore.
+- Previously only REAL had a Top-N server feed arm endpoint.
+- DEMO could therefore stay at 0/10 indefinitely after a cold/restarted server.
+
+Changes:
+- Adds POST /sessions/{sid}/top4/arm for BOTH DEMO and REAL.
+- Generic backend arm() attaches the canonical server tick subscription.
+- Frontend auto-arms a cold Top-N feed when it sees DigitScore below readiness.
+- Auto-arm is throttled to once per 10 seconds.
+- Manual "Warm Top-N Feed" button works in DEMO and REAL.
+- Execute Simultaneous also arms the feed first if it is cold.
+- No proposal or purchase is sent by warming.
 
 Replace:
   /bot.html
   /app/top4_basket.py
-
-Top-4 recovery:
-- maximum 6 rounds
-- target cycle profit: $1.00
-- assumed DigitMatch total return: 8.93x
-- minimum leg stake: $0.35
-- next stake is calculated from actual settled Top-4 losses
-- a profitable basket resets the cycle to Round 1
-- after 6 consecutive losing baskets, recovery stops
-- the next basket cannot open while the previous basket is settling
-- backend owns the Top-4 recovery stake to avoid stale browser values
-
-REAL:
-- no unattended recovery purchases
-- each REAL basket still requires one explicit confirmation
-- after confirmation, fresh proposals are requested and the basket is submitted immediately
+  /app/top4_main.py
