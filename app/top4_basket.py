@@ -1065,6 +1065,68 @@ class Top4BasketService:
         }
 
 
+    def real_recovery_state(self, *, user_id, sid):
+        """
+        Build the current REAL Top-4 trade state from persisted settled baskets.
+
+        Rounds belong to one trade until cumulative P/L becomes positive or
+        six rounds are consumed. This is read-only; it never buys.
+        """
+        db = SessionLocal()
+        try:
+            s = self._owned_session(db, user_id, sid)
+            baskets = [
+                b for b in self._session_baskets(db, sid)
+                if int(b.get("top_n") or 0) == self.RECOVERY_TOP_N
+                and b.get("settled")
+            ]
+        finally:
+            db.close()
+
+        current = []
+        trade_pnl = 0.0
+
+        for basket in baskets:
+            pnl = float(basket.get("net_profit") or 0)
+            current.append(basket)
+            trade_pnl = round(trade_pnl + pnl, 2)
+
+            if trade_pnl > 0 or len(current) >= self.RECOVERY_MAX_ROUNDS:
+                current = []
+                trade_pnl = 0.0
+
+        rounds_completed = len(current)
+        final_loss = (
+            rounds_completed >= self.RECOVERY_MAX_ROUNDS
+            and trade_pnl <= 0
+        )
+        won = trade_pnl > 0
+
+        recovery = self.recovery_status(user_id=user_id, sid=sid)
+
+        return {
+            "account_mode": str(s.account_mode or "").upper(),
+            "active": bool(current),
+            "rounds_completed": rounds_completed,
+            "trade_pnl": round(trade_pnl, 2),
+            "won": won,
+            "final_loss": final_loss,
+            "next_round": (
+                None if won or final_loss
+                else int(recovery.get("round") or 1)
+            ),
+            "next_leg_stake": (
+                None if won or final_loss
+                else float(recovery.get("next_leg_stake") or 0)
+            ),
+            "next_basket_stake": (
+                None if won or final_loss
+                else float(recovery.get("next_basket_stake") or 0)
+            ),
+            "rounds": current,
+        }
+
+
     def status(self, *, user_id, sid):
         db = SessionLocal()
         try:
@@ -1089,6 +1151,10 @@ class Top4BasketService:
             "latest": live[0] if live else None,
             "cycle": self.cycles.get(int(sid)),
             "recovery": self.recovery_status(
+                user_id=user_id,
+                sid=sid,
+            ),
+            "real_recovery": self.real_recovery_state(
                 user_id=user_id,
                 sid=sid,
             ),

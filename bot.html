@@ -11334,7 +11334,7 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 case 'TOP4_DEMO_BASKET_LOSS':
                     result = 'LOSS ❌';
                     status = 'Top-4 basket settled at a loss';
-                    action = 'Review recovery round before the next basket';
+                    action = 'Next recovery round is prepared · confirm it to continue';
                     resultClass = 'text-lg font-black text-rose-400';
                     break;
 
@@ -13431,6 +13431,215 @@ function toggleServerContinuousResearch() {
         }
 
 
+        function renderServerTop4RealRecovery(state, latest, recovery) {
+            const hero = document.getElementById('serverTopNHero');
+            const heroResult = document.getElementById('serverTopNHeroResult');
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
+            const smallPnl = document.getElementById('serverTopNSessionPnl');
+            const roundEl = document.getElementById('serverTopNRecoveryRound');
+            const lossEl = document.getElementById('serverTopNRecoveryLoss');
+            const legStakeEl = document.getElementById('serverTopNRecoveryLegStake');
+            const historyEl = document.getElementById('serverTopNRoundHistory');
+            const legsEl = document.getElementById('serverTopNLegs');
+            const executeBtn = document.getElementById('serverTopNExecuteBtn');
+            const stakeInput = document.getElementById('serverTopNStake');
+
+            const rounds = Array.isArray(state?.rounds) ? state.rounds : [];
+            const tradePnl = Number(state?.trade_pnl || 0);
+            const completed = Number(state?.rounds_completed || 0);
+            const nextRound = Number(state?.next_round || 0);
+            const nextLeg = Number(state?.next_leg_stake || 0);
+            const nextBasket = Number(state?.next_basket_stake || 0);
+            const won = state?.won === true;
+            const finalLoss = state?.final_loss === true;
+
+            if (smallPnl) {
+                smallPnl.textContent = formatSignedMoney(tradePnl);
+                smallPnl.className =
+                    'text-sm font-black ' +
+                    (tradePnl > 0
+                        ? 'text-emerald-300'
+                        : tradePnl < 0
+                            ? 'text-rose-300'
+                            : 'text-white');
+            }
+
+            if (heroPnl) {
+                heroPnl.textContent = formatSignedMoney(tradePnl);
+                heroPnl.className =
+                    'mt-1 text-3xl font-black ' +
+                    (tradePnl > 0
+                        ? 'text-emerald-300'
+                        : tradePnl < 0
+                            ? 'text-rose-300'
+                            : 'text-slate-200');
+            }
+
+            if (won) {
+                if (heroResult) {
+                    heroResult.textContent = 'WIN';
+                    heroResult.className =
+                        'mt-1 text-5xl font-black text-emerald-400';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        `REAL Top-4 trade won after ${completed} round${completed === 1 ? '' : 's'}.`;
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-emerald-500/60 ' +
+                        'bg-emerald-950/35 p-4 text-center';
+                }
+                if (executeBtn) {
+                    executeBtn.textContent = 'Start New Top-4 Trade';
+                }
+                setServerTopNStatus(
+                    'WIN',
+                    `Top-4 trade won ${formatSignedMoney(tradePnl)}`,
+                    'good'
+                );
+
+            } else if (finalLoss) {
+                if (heroResult) {
+                    heroResult.textContent = 'LOSS';
+                    heroResult.className =
+                        'mt-1 text-5xl font-black text-rose-400';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        'REAL Top-4 trade ended after Round 6/6.';
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-rose-500/60 ' +
+                        'bg-rose-950/35 p-4 text-center';
+                }
+                if (executeBtn) {
+                    executeBtn.textContent = 'Start New Top-4 Trade';
+                }
+                setServerTopNStatus(
+                    'LOSS',
+                    `Top-4 trade lost ${formatSignedMoney(tradePnl)}`,
+                    'bad'
+                );
+
+            } else if (completed > 0) {
+                // A recovery trade is still alive. Do NOT label the whole trade
+                // LOSS merely because the latest basket lost.
+                if (heroResult) {
+                    heroResult.textContent = 'RUNNING';
+                    heroResult.className =
+                        'mt-1 text-4xl font-black text-amber-300';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        `Round ${completed} lost · cumulative trade P/L ${formatSignedMoney(tradePnl)} · next Round ${nextRound}/6`;
+                }
+                if (hero) {
+                    hero.className =
+                        'mt-3 rounded-xl border border-amber-500/50 ' +
+                        'bg-amber-950/25 p-4 text-center';
+                }
+
+                if (executeBtn) {
+                    executeBtn.textContent =
+                        `Confirm Round ${nextRound} · $${nextBasket.toFixed(2)}`;
+                }
+
+                setServerTopNStatus(
+                    'RECOVERY READY',
+                    `Round ${nextRound}/6 ready · $${nextLeg.toFixed(2)}/digit · $${nextBasket.toFixed(2)} basket`,
+                    'warn'
+                );
+
+            } else {
+                if (heroResult) {
+                    heroResult.textContent = 'READY';
+                    heroResult.className =
+                        'mt-1 text-3xl font-black text-slate-200';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent =
+                        'New REAL Top-4 trade ready.';
+                }
+                if (executeBtn) {
+                    executeBtn.textContent = 'Start Top-4 Trade';
+                }
+            }
+
+            if (roundEl) {
+                roundEl.textContent = won || finalLoss
+                    ? `${Math.max(completed, 1)} / 6`
+                    : `${Math.max(nextRound, 1)} / 6`;
+            }
+
+            if (lossEl) {
+                lossEl.textContent =
+                    `$${Math.max(0, -tradePnl).toFixed(2)}`;
+            }
+
+            if (legStakeEl) {
+                legStakeEl.textContent =
+                    won || finalLoss
+                        ? '—'
+                        : `$${nextLeg.toFixed(2)}`;
+            }
+
+            if (stakeInput && !won && !finalLoss) {
+                stakeInput.value = nextBasket.toFixed(2);
+            }
+
+            if (historyEl) {
+                historyEl.innerHTML = rounds.map((r, idx) => {
+                    const pnl = Number(r?.net_profit || 0);
+                    const cls = pnl > 0
+                        ? 'text-emerald-300 font-black'
+                        : 'text-rose-300 font-black';
+
+                    return `<span class="${cls} mr-2">
+                        R${idx + 1} ${formatSignedMoney(pnl)}
+                    </span>`;
+                }).join('');
+            }
+
+            const latestLegs = Array.isArray(latest?.legs)
+                ? latest.legs
+                : [];
+
+            if (legsEl) {
+                if (!latestLegs.length) {
+                    legsEl.textContent =
+                        completed > 0
+                            ? `Round ${nextRound}/6 is prepared and waiting for confirmation.`
+                            : 'No simultaneous basket yet.';
+                } else {
+                    legsEl.innerHTML = latestLegs.map(leg => {
+                        const legStatus = String(leg?.status || 'OPEN').toUpperCase();
+                        const profit = Number(leg?.profit || 0);
+                        const stake = Number(leg?.stake || 0);
+                        const rank = Number(leg?.rank);
+                        const digit = Number(leg?.digit);
+
+                        const cls = legStatus === 'WIN'
+                            ? 'border border-emerald-500/60 bg-emerald-950/35 text-emerald-300 font-black'
+                            : legStatus === 'LOSS'
+                                ? 'border border-rose-500/60 bg-rose-950/35 text-rose-300 font-black'
+                                : 'border border-amber-500/40 bg-amber-950/20 text-amber-200 font-black';
+
+                        return `<span class="inline-block mr-2 mb-1 rounded px-2 py-1 ${cls}">
+                            #${Number.isInteger(rank) ? rank : '—'}
+                            · D${Number.isInteger(digit) ? digit : '—'}
+                            · $${stake.toFixed(2)}
+                            · ${legStatus}
+                            ${['WIN','LOSS'].includes(legStatus) ? ` · ${formatSignedMoney(profit)}` : ''}
+                        </span>`;
+                    }).join('');
+                }
+            }
+        }
+
+
         function renderServerTop4LiveCycle(cycle) {
             const hero = document.getElementById('serverTopNHero');
             const heroResult = document.getElementById('serverTopNHeroResult');
@@ -13816,85 +14025,37 @@ function toggleServerContinuousResearch() {
                 const latest = statusPayload?.latest || null;
                 const recovery = statusPayload?.recovery || null;
                 const cycle = statusPayload?.cycle || null;
+                const realRecovery = statusPayload?.real_recovery || null;
+
+                const mode = String(
+                    s.state?.account_mode ||
+                    sessionStorage.getItem('selectedAccountMode') ||
+                    localStorage.getItem('selectedAccountMode') ||
+                    ''
+                ).toUpperCase();
 
                 if (cycle) {
-                    // DEMO automatic multi-round Top-4 trade.
                     renderServerTop4LiveCycle(cycle);
                     window.SERVER_EXECUTION.top4Cycle = cycle;
-                } else if (latest) {
-                    // REAL/manual Top-4 uses the latest basket as the authoritative
-                    // visible result. Do NOT reset the hero to READY after settlement.
-                    renderServerTopNResult(latest, null);
 
+                } else if (mode === 'REAL' && realRecovery) {
+                    renderServerTop4RealRecovery(
+                        realRecovery,
+                        latest,
+                        recovery
+                    );
+
+                    window.SERVER_EXECUTION.top4RealRecovery = realRecovery;
+
+                    if (latest) {
+                        window.SERVER_EXECUTION.topNLatest = latest;
+                    }
+
+                } else if (latest) {
+                    renderServerTopNResult(latest, null);
                     window.SERVER_EXECUTION.topNLatest = latest;
 
-                    const latestStatus = String(
-                        latest?.status || ''
-                    ).toUpperCase();
-
-                    if (
-                        latestStatus === 'SETTLED' ||
-                        latestStatus === 'SETTLEMENT_RECONCILE_REQUIRED'
-                    ) {
-                        window.SERVER_EXECUTION.topNExecutionInFlight = false;
-                        window.SERVER_EXECUTION.topNExecutionStage = null;
-
-                        const pnl = Number(latest?.net_profit || 0);
-                        const won = pnl > 0;
-
-                        const hero = document.getElementById('serverTopNHero');
-                        const heroResult = document.getElementById('serverTopNHeroResult');
-                        const heroPnl = document.getElementById('serverTopNHeroPnl');
-                        const heroMeta = document.getElementById('serverTopNHeroMeta');
-                        const smallPnl = document.getElementById('serverTopNSessionPnl');
-
-                        if (heroResult) {
-                            heroResult.textContent = won ? 'WIN' : 'LOSS';
-                            heroResult.className =
-                                'mt-1 text-5xl font-black ' +
-                                (won ? 'text-emerald-400' : 'text-rose-400');
-                        }
-
-                        if (heroPnl) {
-                            heroPnl.textContent = formatSignedMoney(pnl);
-                            heroPnl.className =
-                                'mt-1 text-3xl font-black ' +
-                                (won ? 'text-emerald-300' : 'text-rose-300');
-                        }
-
-                        if (smallPnl) {
-                            smallPnl.textContent = formatSignedMoney(pnl);
-                            smallPnl.className =
-                                'text-sm font-black ' +
-                                (won ? 'text-emerald-300' : 'text-rose-300');
-                        }
-
-                        if (heroMeta) {
-                            heroMeta.textContent = won
-                                ? 'Latest REAL Top-4 basket settled profitably.'
-                                : 'Latest REAL Top-4 basket settled at a loss.';
-                        }
-
-                        if (hero) {
-                            hero.className =
-                                'mt-3 rounded-xl border p-4 text-center ' +
-                                (
-                                    won
-                                        ? 'border-emerald-500/60 bg-emerald-950/35'
-                                        : 'border-rose-500/60 bg-rose-950/35'
-                                );
-                        }
-
-                        setServerTopNStatus(
-                            won ? 'WIN' : 'LOSS',
-                            won
-                                ? `Top-${Number(latest?.top_n || 4)} basket won ${formatSignedMoney(pnl)}`
-                                : `Top-${Number(latest?.top_n || 4)} basket lost ${formatSignedMoney(pnl)}`,
-                            won ? 'good' : 'bad'
-                        );
-                    }
                 } else if (!window.SERVER_EXECUTION?.top4AutoCycleRunning) {
-                    // No Top-4 basket exists yet for this session.
                     renderServerTopNRecovery(recovery);
 
                     const heroResult = document.getElementById('serverTopNHeroResult');
@@ -14177,13 +14338,16 @@ function toggleServerContinuousResearch() {
                         .filter(Number.isInteger);
 
                     const recovery = window.SERVER_EXECUTION?.topNRecovery || null;
+                    const realRecovery = window.SERVER_EXECUTION?.top4RealRecovery || null;
+
                     const recoveryLine = (
                         cfg.top_n === 4 &&
                         recovery &&
                         !recovery.waiting_for_settlement
                     )
-                        ? `Recovery round: ${recovery.round || '—'}/${recovery.max_rounds || 6}\n` +
-                          `Accumulated cycle loss: $${Number(recovery.accumulated_loss || 0).toFixed(2)}\n`
+                        ? `Round: ${recovery.round || '—'}/${recovery.max_rounds || 6}\n` +
+                          `Current Top-4 trade P/L: ${formatSignedMoney(Number(realRecovery?.trade_pnl || 0))}\n` +
+                          `Stake per digit: $${Number(recovery.next_leg_stake || 0).toFixed(2)}\n`
                         : '';
 
                     const ok = confirm(
