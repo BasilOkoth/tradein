@@ -658,8 +658,8 @@
 </div>
 
 <div id="serverTopNPanel" class="mt-3 rounded-xl border border-violet-500/30 bg-slate-950/55 p-3">
-  <div class="flex flex-wrap items-center gap-2 mb-2">
-    <div class="text-[11px] font-black text-violet-300">⚡ SIMULTANEOUS TOP-N</div>
+  <div class="flex flex-wrap items-center gap-2 mb-3">
+    <div class="text-[11px] font-black text-violet-300">⚡ SIMULTANEOUS TOP-4 RECOVERY</div>
     <span id="serverTopNStatus" class="edge-pill text-slate-300">READY</span>
   </div>
 
@@ -670,78 +670,73 @@
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
     </div>
     <div>
-      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Basket stake</label>
-      <input id="serverTopNStake" type="number" min="1.40" step="0.01" value="1.40"
+      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Next basket</label>
+      <input id="serverTopNStake" type="number" min="1.40" step="0.01" value="1.40" readonly
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
     </div>
     <div class="flex items-end">
       <button id="serverTopNArmBtn" type="button" onclick="armServerTopNFeed()"
         class="server-exec-btn w-full bg-indigo-700 hover:bg-indigo-600">
-        Warm REAL Feed
+        Warm Top-N Feed
       </button>
     </div>
     <div class="flex items-end">
       <button id="serverTopNExecuteBtn" type="button" onclick="executeServerTopN()"
         class="server-exec-btn w-full bg-violet-700 hover:bg-violet-600">
-        Execute Simultaneous
+        Execute Top-4
       </button>
     </div>
   </div>
 
-  <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+  <div id="serverTopNHero"
+       class="mt-3 rounded-xl border border-slate-700 bg-slate-900/70 p-4 text-center">
+    <div class="text-[10px] uppercase tracking-wider text-slate-400 font-bold">Latest Basket Result</div>
+    <div id="serverTopNHeroResult" class="mt-1 text-3xl font-black text-slate-200">READY</div>
+    <div id="serverTopNHeroPnl" class="mt-1 text-xl font-black text-slate-300">$0.00</div>
+    <div id="serverTopNHeroMeta" class="mt-1 text-[11px] text-slate-400">
+      Waiting for a Top-4 basket.
+    </div>
+  </div>
+
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket Status</div>
-      <div id="serverTopNBasketStatus" class="text-sm font-black text-white">—</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Round</div>
+      <div id="serverTopNRecoveryRound" class="text-sm font-black text-white">1 / 6</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket Stake</div>
-      <div id="serverTopNBasketStake" class="text-sm font-black text-white">$0.00</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Cycle Loss</div>
+      <div id="serverTopNRecoveryLoss" class="text-sm font-black text-white">$0.00</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Basket P/L</div>
-      <div id="serverTopNBasketPnl" class="text-sm font-black text-white">$0.00</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Stake / Digit</div>
+      <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
     </div>
     <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Winning Ranks</div>
-      <div id="serverTopNWinners" class="text-sm font-black text-white">—</div>
-    </div>
-    <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
-      <div class="text-[9px] uppercase text-slate-400 font-bold">Top-N Session P/L</div>
+      <div class="text-[9px] uppercase text-slate-400 font-bold">Session Top-N P/L</div>
       <div id="serverTopNSessionPnl" class="text-sm font-black text-white">$0.00</div>
     </div>
   </div>
 
-  <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
-    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
-      <div class="text-[9px] uppercase text-amber-300 font-bold">Recovery Round</div>
-      <div id="serverTopNRecoveryRound" class="text-sm font-black text-white">1 / 6</div>
-    </div>
-    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
-      <div class="text-[9px] uppercase text-amber-300 font-bold">Cycle Loss</div>
-      <div id="serverTopNRecoveryLoss" class="text-sm font-black text-white">$0.00</div>
-    </div>
-    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
-      <div class="text-[9px] uppercase text-amber-300 font-bold">Next Stake / Digit</div>
-      <div id="serverTopNRecoveryLegStake" class="text-sm font-black text-white">$0.35</div>
-    </div>
-    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
-      <div class="text-[9px] uppercase text-amber-300 font-bold">Next Basket</div>
-      <div id="serverTopNRecoveryBasket" class="text-sm font-black text-white">$1.40</div>
-    </div>
-    <div class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-2">
-      <div class="text-[9px] uppercase text-amber-300 font-bold">Target Profit</div>
-      <div id="serverTopNRecoveryTarget" class="text-sm font-black text-white">+$1.00</div>
-    </div>
+  <div id="serverTopNLegs" class="mt-3 text-[10px] text-slate-300">
+    No simultaneous basket yet.
   </div>
 
-  <div id="serverTopNRecoveryNote" class="mt-2 text-[10px] text-amber-200">
-    Top-4 recovery: maximum 6 rounds. Stake is recalculated from actual settled losses.
+  <div id="serverTopNRecoveryNote" class="mt-2 text-[10px] text-slate-400">
+    Maximum 6 recovery rounds. A profitable basket resets the cycle.
   </div>
 
-  <div id="serverTopNLegs" class="mt-2 text-[10px] text-slate-300">No simultaneous basket yet.</div>
+  <div id="serverTopNDetail" class="mt-1 text-[10px] text-slate-500">
+    Server DigitScore warming status appears here.
+  </div>
 
-  <div id="serverTopNDetail" class="mt-2 text-[10px] text-slate-400">
-    Uses the current DigitScore ranking and submits the selected Top-N contracts together.
+  <!-- compatibility nodes retained for existing renderer code -->
+  <div class="hidden">
+    <div id="serverTopNBasketStatus">—</div>
+    <div id="serverTopNBasketStake">$0.00</div>
+    <div id="serverTopNBasketPnl">$0.00</div>
+    <div id="serverTopNWinners">—</div>
+    <div id="serverTopNRecoveryBasket">$1.40</div>
+    <div id="serverTopNRecoveryTarget">+$1.00</div>
   </div>
 </div>
 </div>
@@ -12886,8 +12881,23 @@ function toggleServerContinuousResearch() {
             const winnersEl = document.getElementById('serverTopNWinners');
             const sessionPnlEl = document.getElementById('serverTopNSessionPnl');
             const legsEl = document.getElementById('serverTopNLegs');
+            const hero = document.getElementById('serverTopNHero');
+            const heroResult = document.getElementById('serverTopNHeroResult');
+            const heroPnl = document.getElementById('serverTopNHeroPnl');
+            const heroMeta = document.getElementById('serverTopNHeroMeta');
 
             if (!latest) {
+                if (heroResult) {
+                    heroResult.textContent = 'READY';
+                    heroResult.className = 'mt-1 text-3xl font-black text-slate-200';
+                }
+                if (heroPnl) {
+                    heroPnl.textContent = '$0.00';
+                    heroPnl.className = 'mt-1 text-xl font-black text-slate-300';
+                }
+                if (heroMeta) {
+                    heroMeta.textContent = 'Waiting for a Top-4 basket.';
+                }
                 if (statusEl) statusEl.textContent = '—';
                 if (stakeEl) stakeEl.textContent = '$0.00';
                 if (pnlEl) pnlEl.textContent = '$0.00';
@@ -12922,6 +12932,59 @@ function toggleServerContinuousResearch() {
                         .map(leg => Number(leg?.rank))
                         .filter(Number.isInteger)
                     : []);
+
+            if (heroResult && heroPnl && heroMeta) {
+                const settled = status === 'SETTLED';
+                const opening =
+                    status === 'OPEN' ||
+                    status === 'REAL_OPEN' ||
+                    status.includes('PARTIAL_OPEN');
+
+                if (settled) {
+                    const isWin = netProfit > 0;
+                    heroResult.textContent = isWin ? 'WIN' : 'LOSS';
+                    heroResult.className =
+                        'mt-1 text-4xl font-black ' +
+                        (isWin ? 'text-emerald-400' : 'text-rose-400');
+
+                    heroPnl.textContent = formatSignedMoney(netProfit);
+                    heroPnl.className =
+                        'mt-1 text-2xl font-black ' +
+                        (isWin ? 'text-emerald-300' : 'text-rose-300');
+
+                    heroMeta.textContent = isWin
+                        ? `Basket settled · winning ranks ${winners.length ? winners.map(x => '#' + x).join(', ') : '—'}`
+                        : 'Basket settled · none of the selected digits matched';
+
+                    if (hero) {
+                        hero.className =
+                            'mt-3 rounded-xl border p-4 text-center ' +
+                            (isWin
+                                ? 'border-emerald-500/50 bg-emerald-950/30'
+                                : 'border-rose-500/50 bg-rose-950/30');
+                    }
+                } else if (opening) {
+                    heroResult.textContent = 'OPEN';
+                    heroResult.className =
+                        'mt-1 text-3xl font-black text-amber-300';
+                    heroPnl.textContent = 'SETTLING…';
+                    heroPnl.className =
+                        'mt-1 text-xl font-black text-amber-200';
+                    heroMeta.textContent =
+                        `Top-${Number(latest.top_n || 4)} basket submitted · waiting for Deriv settlement`;
+                    if (hero) {
+                        hero.className =
+                            'mt-3 rounded-xl border border-amber-500/40 bg-amber-950/20 p-4 text-center';
+                    }
+                } else {
+                    heroResult.textContent = status;
+                    heroResult.className =
+                        'mt-1 text-3xl font-black text-slate-200';
+                    heroPnl.textContent = formatSignedMoney(netProfit);
+                    heroPnl.className =
+                        'mt-1 text-xl font-black text-slate-300';
+                }
+            }
 
             if (statusEl) statusEl.textContent = status;
             if (stakeEl) stakeEl.textContent = `$${totalStake.toFixed(2)}`;
@@ -12965,8 +13028,15 @@ function toggleServerContinuousResearch() {
                         const profit = Number(leg?.profit || 0);
                         const stake = Number(leg?.stake || 0);
 
+                        const legClass =
+                            legStatus === 'WIN'
+                                ? 'border border-emerald-500/50 bg-emerald-950/30 text-emerald-300 font-black'
+                                : legStatus === 'LOSS'
+                                    ? 'border border-rose-500/50 bg-rose-950/30 text-rose-300 font-black'
+                                    : 'border border-slate-700 bg-slate-900/80 text-slate-300';
+
                         return `
-                            <span class="inline-block mr-2 mb-1 rounded bg-slate-900/80 px-2 py-1">
+                            <span class="inline-block mr-2 mb-1 rounded px-2 py-1 ${legClass}">
                                 #${Number.isInteger(rank) ? rank : '—'}
                                 · D${Number.isInteger(digit) ? digit : '—'}
                                 · $${stake.toFixed(2)}
@@ -13354,7 +13424,7 @@ function toggleServerContinuousResearch() {
                 // DigitMatch settles quickly, but the backend settlement task
                 // is asynchronous. Refresh the basket result a few times so
                 // P/L appears without requiring another user action.
-                [500, 1200, 2500, 5000].forEach(delay => {
+                [150, 300, 600, 1000, 1600, 2500].forEach(delay => {
                     setTimeout(() => {
                         pollServerTopNResult().catch(() => {});
                     }, delay);

@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V11_SERVER_WARM"
+    VERSION = "TOP4_RECOVERY_V12_FAST_SETTLEMENT"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -663,71 +663,104 @@ class Top4BasketService:
             return
 
         client = await engine._client(user_id, account_id)
+
         unresolved = {
             str(leg["contract_id"]): leg
             for leg in runtime.get("legs", [])
             if leg.get("contract_id")
         }
-        deadline = asyncio.get_running_loop().time() + 30.0
+
+        # Top-N legs are one-tick contracts. Reconcile all outstanding legs in
+        # parallel instead of issuing four sequential status requests.
+        deadline = asyncio.get_running_loop().time() + 12.0
+
+        async def fetch_one(contract_id):
+            try:
+                data = await client.contract_status(contract_id)
+                return contract_id, data, None
+            except Exception as exc:
+                return contract_id, None, exc
 
         while unresolved and asyncio.get_running_loop().time() < deadline:
-            for contract_id, leg in list(unresolved.items()):
-                try:
-                    data = await client.contract_status(contract_id)
-                    contract = data.get("proposal_open_contract") or {}
-                    if not contract.get("is_sold"):
-                        continue
+            contract_ids = list(unresolved.keys())
 
-                    profit = float(contract.get("profit") or 0)
-                    leg["status"] = "WIN" if profit > 0 else "LOSS"
-                    leg["profit"] = profit
-                    leg["sell_price"] = float(contract.get("sell_price") or 0)
-                    leg["exit_tick"] = (
-                        contract.get("exit_tick_display_value")
-                        or contract.get("exit_tick")
-                        or contract.get("current_spot")
-                    )
-                    leg["settled_at"] = datetime.utcnow().isoformat()
+            results = await asyncio.gather(
+                *[fetch_one(contract_id) for contract_id in contract_ids]
+            )
 
-                    db = SessionLocal()
-                    try:
-                        log = (
-                            db.query(TradeLog)
-                            .filter(
-                                TradeLog.trading_session_id == int(sid),
-                                TradeLog.contract_id == str(contract_id),
-                            )
-                            .order_by(TradeLog.id.desc())
-                            .first()
-                        )
-                        if log:
-                            log.status = leg["status"]
-                            log.profit = profit
-                            log.settled_at = datetime.utcnow()
-                            try:
-                                raw = json.loads(log.raw_json or "{}")
-                            except Exception:
-                                raw = {}
-                            raw["deriv_settlement"] = data
-                            raw["basket_leg_result"] = leg["status"]
-                            log.raw_json = json.dumps(raw)
-                            db.commit()
-                    finally:
-                        db.close()
+            settled_any = False
 
-                    unresolved.pop(contract_id, None)
-                except Exception:
+            for contract_id, data, error in results:
+                if error is not None or not data:
                     continue
 
+                contract = data.get("proposal_open_contract") or {}
+                if not contract.get("is_sold"):
+                    continue
+
+                leg = unresolved.get(contract_id)
+                if not leg:
+                    continue
+
+                profit = float(contract.get("profit") or 0)
+                leg["status"] = "WIN" if profit > 0 else "LOSS"
+                leg["profit"] = profit
+                leg["sell_price"] = float(contract.get("sell_price") or 0)
+                leg["exit_tick"] = (
+                    contract.get("exit_tick_display_value")
+                    or contract.get("exit_tick")
+                    or contract.get("current_spot")
+                )
+                leg["settled_at"] = datetime.utcnow().isoformat()
+
+                db = SessionLocal()
+                try:
+                    log = (
+                        db.query(TradeLog)
+                        .filter(
+                            TradeLog.trading_session_id == int(sid),
+                            TradeLog.contract_id == str(contract_id),
+                        )
+                        .order_by(TradeLog.id.desc())
+                        .first()
+                    )
+
+                    if log:
+                        log.status = leg["status"]
+                        log.profit = profit
+                        log.settled_at = datetime.utcnow()
+
+                        try:
+                            raw = json.loads(log.raw_json or "{}")
+                        except Exception:
+                            raw = {}
+
+                        raw["deriv_settlement"] = data
+                        raw["basket_leg_result"] = leg["status"]
+                        log.raw_json = json.dumps(raw)
+                        db.commit()
+                finally:
+                    db.close()
+
+                unresolved.pop(contract_id, None)
+                settled_any = True
+
             if unresolved:
-                await asyncio.sleep(0.25)
+                # 100 ms keeps the UI responsive without serially blocking each
+                # contract for another quarter second.
+                await asyncio.sleep(0.10 if settled_any else 0.15)
 
         runtime["status"] = (
-            "SETTLED" if not unresolved else "SETTLEMENT_RECONCILE_REQUIRED"
+            "SETTLED"
+            if not unresolved
+            else "SETTLEMENT_RECONCILE_REQUIRED"
         )
         runtime["settled_at"] = datetime.utcnow().isoformat()
         runtime["net_profit"] = round(
-            sum(float(leg.get("profit") or 0) for leg in runtime.get("legs", [])),
+            sum(
+                float(leg.get("profit") or 0)
+                for leg in runtime.get("legs", [])
+            ),
             2,
         )
         runtime["winning_ranks"] = [
@@ -735,6 +768,13 @@ class Top4BasketService:
             for leg in runtime.get("legs", [])
             if leg.get("status") == "WIN"
         ]
+
+        runtime["losing_ranks"] = [
+            int(leg["rank"])
+            for leg in runtime.get("legs", [])
+            if leg.get("status") == "LOSS"
+        ]
+
 
     def status(self, *, user_id, sid):
         db = SessionLocal()
