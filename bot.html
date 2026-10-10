@@ -670,9 +670,10 @@
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
     </div>
     <div>
-      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Next basket</label>
-      <input id="serverTopNStake" type="number" min="1.40" step="0.01" value="1.40" readonly
+      <label class="block text-[9px] uppercase text-slate-400 font-bold mb-1">Starting Stake / Digit</label>
+      <input id="serverTopNStartStake" type="number" min="0.35" step="0.01" value="0.35"
         class="w-full rounded-md bg-slate-900 border border-slate-700 text-white px-2 py-1.5 text-xs">
+      <input id="serverTopNStake" type="hidden" value="1.40">
     </div>
     <div class="flex items-end">
       <button id="serverTopNArmBtn" type="button" onclick="armServerTopNFeed()"
@@ -686,6 +687,38 @@
         Start Top-4 Trade
       </button>
     </div>
+  </div>
+
+  <div id="serverTopNCapitalPlanner"
+       class="mt-3 rounded-xl border border-cyan-500/30 bg-cyan-950/15 p-3">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <div class="text-[10px] uppercase tracking-wider text-cyan-300 font-black">6-Round Capital Planner</div>
+        <div class="text-[10px] text-slate-400">Worst-case capital if all six recovery rounds lose.</div>
+      </div>
+      <div id="serverTopNCapitalStatus" class="edge-pill text-slate-300">CALCULATING</div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+        <div class="text-[9px] uppercase text-slate-400 font-bold">Round 1 Basket</div>
+        <div id="serverTopNRound1Basket" class="text-sm font-black text-white">$1.40</div>
+      </div>
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+        <div class="text-[9px] uppercase text-slate-400 font-bold">6-Round Required</div>
+        <div id="serverTopNCapitalRequired" class="text-lg font-black text-white">$46.20</div>
+      </div>
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+        <div class="text-[9px] uppercase text-slate-400 font-bold">Available Balance</div>
+        <div id="serverTopNAvailableBalance" class="text-lg font-black text-white">$0.00</div>
+      </div>
+      <div class="rounded-lg border border-slate-700 bg-slate-900/60 p-2">
+        <div class="text-[9px] uppercase text-slate-400 font-bold">Capital Margin</div>
+        <div id="serverTopNCapitalMargin" class="text-lg font-black text-white">$0.00</div>
+      </div>
+    </div>
+
+    <div id="serverTopNCapitalRounds" class="mt-3 grid grid-cols-2 md:grid-cols-3 gap-1 text-[10px]"></div>
   </div>
 
   <div id="serverTopNHero"
@@ -11869,7 +11902,8 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             }
 
             
-            renderServerTradeNarrative(st);
+            try { refreshTop4CapitalPlan(); } catch (_) {}
+                        renderServerTradeNarrative(st);
             if (
                 st?.last_settlement?.settled_at &&
                 Date.now() - Number(
@@ -13213,6 +13247,156 @@ function toggleServerContinuousResearch() {
         }
 
 
+        function calculateTop4CapitalPlanLocal(startingLegStake) {
+            const start = Math.max(
+                0.35,
+                Math.ceil(Number(startingLegStake || 0.35) * 100) / 100
+            );
+            const topN = 4;
+            const totalReturn = 8.93;
+            const targetProfit = 1.00;
+            const denominator = totalReturn - topN;
+
+            let accumulatedLoss = 0;
+            const rounds = [];
+
+            for (let round = 1; round <= 6; round++) {
+                let legStake = start;
+
+                if (round > 1) {
+                    legStake = Math.max(
+                        start,
+                        (accumulatedLoss + targetProfit) / denominator
+                    );
+                    legStake = Math.ceil(legStake * 100) / 100;
+                }
+
+                const basketStake = Number(
+                    (legStake * topN).toFixed(2)
+                );
+
+                const basketProfitIfHit = Number(
+                    (denominator * legStake).toFixed(2)
+                );
+
+                rounds.push({
+                    round,
+                    stake_per_digit: Number(legStake.toFixed(2)),
+                    basket_stake: basketStake,
+                    loss_before_round: Number(accumulatedLoss.toFixed(2)),
+                    basket_profit_if_hit: basketProfitIfHit,
+                    trade_pnl_if_hit: Number(
+                        (basketProfitIfHit - accumulatedLoss).toFixed(2)
+                    )
+                });
+
+                accumulatedLoss = Number(
+                    (accumulatedLoss + basketStake).toFixed(2)
+                );
+            }
+
+            return {
+                starting_leg_stake: start,
+                rounds,
+                maximum_capital_required: Number(
+                    rounds.reduce(
+                        (sum, r) => sum + r.basket_stake,
+                        0
+                    ).toFixed(2)
+                )
+            };
+        }
+
+        function renderTop4CapitalPlan(plan) {
+            const requiredEl = document.getElementById('serverTopNCapitalRequired');
+            const balanceEl = document.getElementById('serverTopNAvailableBalance');
+            const marginEl = document.getElementById('serverTopNCapitalMargin');
+            const round1El = document.getElementById('serverTopNRound1Basket');
+            const roundsEl = document.getElementById('serverTopNCapitalRounds');
+            const statusEl = document.getElementById('serverTopNCapitalStatus');
+            const executeBtn = document.getElementById('serverTopNExecuteBtn');
+
+            const required = Number(plan?.maximum_capital_required || 0);
+            const balance = Number(
+                window.SERVER_EXECUTION?.state?.account_balance ??
+                window.currentBalance ??
+                0
+            );
+            const margin = Number((balance - required).toFixed(2));
+            const rounds = Array.isArray(plan?.rounds) ? plan.rounds : [];
+
+            if (requiredEl) requiredEl.textContent = `$${required.toFixed(2)}`;
+            if (balanceEl) balanceEl.textContent = `$${balance.toFixed(2)}`;
+            if (marginEl) {
+                marginEl.textContent =
+                    `${margin >= 0 ? '+' : '-'}$${Math.abs(margin).toFixed(2)}`;
+                marginEl.className =
+                    'text-lg font-black ' +
+                    (margin >= 0 ? 'text-emerald-300' : 'text-rose-300');
+            }
+            if (round1El && rounds[0]) {
+                round1El.textContent =
+                    `$${Number(rounds[0].basket_stake || 0).toFixed(2)}`;
+            }
+
+            if (roundsEl) {
+                roundsEl.innerHTML = rounds.map(r => `
+                    <div class="rounded border border-slate-700 bg-slate-900/50 px-2 py-1">
+                        <span class="font-black text-cyan-300">R${r.round}</span>
+                        · $${Number(r.stake_per_digit).toFixed(2)}/digit
+                        · $${Number(r.basket_stake).toFixed(2)} basket
+                    </div>
+                `).join('');
+            }
+
+            const sufficient = balance >= required && required > 0;
+
+            if (statusEl) {
+                statusEl.textContent =
+                    sufficient
+                        ? 'CAPITAL SUFFICIENT'
+                        : `NEED $${Math.max(0, required - balance).toFixed(2)} MORE`;
+                statusEl.className =
+                    'edge-pill ' +
+                    (sufficient
+                        ? 'text-emerald-300'
+                        : 'text-rose-300');
+            }
+
+            window.SERVER_EXECUTION.top4CapitalPlan = plan;
+            window.SERVER_EXECUTION.top4CapitalSufficient = sufficient;
+
+            if (executeBtn) {
+                const readiness = (() => {
+                    try { return getServerTopNReadiness(); }
+                    catch (_) { return { ready: false }; }
+                })();
+
+                executeBtn.disabled =
+                    !readiness.ready ||
+                    !sufficient;
+
+                executeBtn.classList.toggle(
+                    'opacity-50',
+                    executeBtn.disabled
+                );
+                executeBtn.classList.toggle(
+                    'cursor-not-allowed',
+                    executeBtn.disabled
+                );
+            }
+        }
+
+        function refreshTop4CapitalPlan() {
+            const input = document.getElementById('serverTopNStartStake');
+            if (!input) return;
+
+            const raw = Number(input.value || 0.35);
+            const plan = calculateTop4CapitalPlanLocal(raw);
+            renderTop4CapitalPlan(plan);
+        }
+
+
         function renderServerTop4LiveCycle(cycle) {
             const hero = document.getElementById('serverTopNHero');
             const heroResult = document.getElementById('serverTopNHeroResult');
@@ -13466,6 +13650,13 @@ function toggleServerContinuousResearch() {
         }
 
 
+        document.addEventListener('input', (event) => {
+            if (event?.target?.id === 'serverTopNStartStake') {
+                refreshTop4CapitalPlan();
+            }
+        });
+
+
         async function executeServerTop4DemoRecoveryCycle() {
             const s = window.SERVER_EXECUTION;
 
@@ -13498,6 +13689,32 @@ function toggleServerContinuousResearch() {
                 return;
             }
 
+            refreshTop4CapitalPlan();
+
+            if (window.SERVER_EXECUTION?.top4CapitalSufficient === false) {
+                const plan = window.SERVER_EXECUTION?.top4CapitalPlan;
+                const required = Number(plan?.maximum_capital_required || 0);
+                const balance = Number(
+                    s.state?.account_balance ??
+                    window.currentBalance ??
+                    0
+                );
+
+                throw new Error(
+                    `Insufficient balance for the configured 6-round Top-4 trade. ` +
+                    `Required $${required.toFixed(2)}, available $${balance.toFixed(2)}.`
+                );
+            }
+
+            const startStake = Math.max(
+                0.35,
+                Math.ceil(
+                    Number(
+                        document.getElementById('serverTopNStartStake')?.value || 0.35
+                    ) * 100
+                ) / 100
+            );
+
             resetServerTopNTradeDisplay();
             setServerTopNStatus(
                 'RUNNING',
@@ -13516,7 +13733,12 @@ function toggleServerContinuousResearch() {
 
                 const result = await serverExecRequest(
                     `/sessions/${s.sessionId}/top4/recovery-demo`,
-                    { method: 'POST' }
+                    {
+                        method: 'POST',
+                        body: {
+                            starting_leg_stake: startStake
+                        }
+                    }
                 );
 
                 renderServerTopNAutoCycleResult(result);
@@ -13679,12 +13901,23 @@ function toggleServerContinuousResearch() {
             ).toUpperCase();
 
             if (btn) {
-                btn.disabled = !state.ready;
-                btn.classList.toggle('opacity-50', !state.ready);
-                btn.classList.toggle('cursor-not-allowed', !state.ready);
-                btn.textContent = state.ready
-                    ? `Execute Top-${state.topN} Simultaneous`
-                    : `Warming ${state.historyCount}/${state.minimumHistory}`;
+                const capitalOk =
+                    window.SERVER_EXECUTION?.top4CapitalSufficient !== false;
+
+                btn.disabled =
+                    !state.ready ||
+                    (state.topN === 4 && !capitalOk);
+
+                btn.classList.toggle('opacity-50', btn.disabled);
+                btn.classList.toggle('cursor-not-allowed', btn.disabled);
+
+                btn.textContent = !state.ready
+                    ? `Warming ${state.historyCount}/${state.minimumHistory}`
+                    : (
+                        state.topN === 4 && !capitalOk
+                            ? 'Insufficient Capital'
+                            : `Start Top-${state.topN} Trade`
+                    );
             }
 
             if (armBtn) {

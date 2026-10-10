@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V16_STABLE_DUAL_MODE"
+    VERSION = "TOP4_RECOVERY_V17_CAPITAL_PLANNER"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -737,6 +737,87 @@ class Top4BasketService:
         ]
 
 
+    def capital_plan(self, starting_leg_stake):
+        try:
+            start = float(starting_leg_stake)
+        except Exception as exc:
+            raise HTTPException(
+                400,
+                "starting_leg_stake must be a number.",
+            ) from exc
+
+        if start < self.MIN_LEG_STAKE:
+            raise HTTPException(
+                400,
+                f"Starting stake per digit must be at least "
+                f"${self.MIN_LEG_STAKE:.2f}.",
+            )
+
+        start = math.ceil(start * 100.0) / 100.0
+
+        rounds = []
+        accumulated_loss = 0.0
+        denominator = (
+            self.DIGITMATCH_TOTAL_RETURN
+            - self.RECOVERY_TOP_N
+        )
+
+        for round_no in range(1, self.RECOVERY_MAX_ROUNDS + 1):
+            if round_no == 1:
+                leg_stake = start
+            else:
+                leg_stake = max(
+                    start,
+                    (
+                        accumulated_loss
+                        + self.RECOVERY_TARGET_PROFIT
+                    ) / denominator,
+                )
+                leg_stake = math.ceil(leg_stake * 100.0) / 100.0
+
+            basket_stake = round(
+                leg_stake * self.RECOVERY_TOP_N,
+                2,
+            )
+
+            win_round_profit = round(
+                denominator * leg_stake,
+                2,
+            )
+
+            final_trade_pnl_if_win = round(
+                win_round_profit - accumulated_loss,
+                2,
+            )
+
+            rounds.append({
+                "round": round_no,
+                "stake_per_digit": round(leg_stake, 2),
+                "basket_stake": basket_stake,
+                "loss_before_round": round(accumulated_loss, 2),
+                "basket_profit_if_hit": win_round_profit,
+                "trade_pnl_if_hit": final_trade_pnl_if_win,
+            })
+
+            accumulated_loss = round(
+                accumulated_loss + basket_stake,
+                2,
+            )
+
+        return {
+            "starting_leg_stake": round(start, 2),
+            "top_n": self.RECOVERY_TOP_N,
+            "max_rounds": self.RECOVERY_MAX_ROUNDS,
+            "target_profit": self.RECOVERY_TARGET_PROFIT,
+            "return_multiplier": self.DIGITMATCH_TOTAL_RETURN,
+            "rounds": rounds,
+            "maximum_capital_required": round(
+                sum(r["basket_stake"] for r in rounds),
+                2,
+            ),
+        }
+
+
     async def _wait_for_basket_terminal(self, basket_id, timeout=15.0):
         deadline = asyncio.get_running_loop().time() + float(timeout)
         while asyncio.get_running_loop().time() < deadline:
@@ -749,7 +830,7 @@ class Top4BasketService:
             await asyncio.sleep(0.05)
         return self.live.get(str(basket_id))
 
-    async def execute_demo_recovery_cycle(self, *, user_id, sid):
+    async def execute_demo_recovery_cycle(self, *, user_id, sid, starting_leg_stake=None):
         """
         Execute ONE DEMO Top-4 trade, with at most six recovery rounds.
 
@@ -777,6 +858,27 @@ class Top4BasketService:
                 "Stop it before starting a Top-4 trade.",
             )
 
+        try:
+            configured_start = float(
+                starting_leg_stake
+                if starting_leg_stake is not None
+                else self.MIN_LEG_STAKE
+            )
+        except Exception as exc:
+            raise HTTPException(
+                400,
+                "starting_leg_stake must be a number.",
+            ) from exc
+
+        if configured_start < self.MIN_LEG_STAKE:
+            raise HTTPException(
+                400,
+                f"Starting stake per digit must be at least "
+                f"${self.MIN_LEG_STAKE:.2f}.",
+            )
+
+        configured_start = math.ceil(configured_start * 100.0) / 100.0
+
         cycle = {
             "status": "RUNNING",
             "round": 0,
@@ -784,9 +886,10 @@ class Top4BasketService:
             "round_status": "STARTING",
             "trade_pnl": 0.0,
             "recovery_loss": 0.0,
-            "stake_per_digit": self.MIN_LEG_STAKE,
+            "starting_leg_stake": configured_start,
+            "stake_per_digit": configured_start,
             "basket_stake": round(
-                self.MIN_LEG_STAKE * self.RECOVERY_TOP_N,
+                configured_start * self.RECOVERY_TOP_N,
                 2,
             ),
             "rounds": [],
@@ -807,7 +910,7 @@ class Top4BasketService:
             )
 
             leg_stake = max(
-                self.MIN_LEG_STAKE,
+                configured_start,
                 (
                     recovery_loss
                     + self.RECOVERY_TARGET_PROFIT

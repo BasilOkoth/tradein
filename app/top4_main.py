@@ -4,11 +4,20 @@ from pydantic import BaseModel, Field
 from .main import app
 from .security import current_user_id
 from .top4_basket import top4_baskets
+from .db import SessionLocal
 
 
 class TopNExecute(BaseModel):
     basket_stake: float = 7.0
     top_n: int = Field(default=7, ge=1, le=7)
+
+
+class Top4RecoveryStart(BaseModel):
+    starting_leg_stake: float = Field(default=0.35, ge=0.35)
+
+
+class Top4CapitalPlan(BaseModel):
+    starting_leg_stake: float = Field(default=0.35, ge=0.35)
 
 
 @app.get("/sessions/{sid}/top4/status")
@@ -40,11 +49,30 @@ async def topn_arm(
 @app.post("/sessions/{sid}/top4/recovery-demo")
 async def top4_recovery_demo(
     sid: int,
+    body: Top4RecoveryStart,
     user_id: str = Depends(current_user_id),
 ):
     return await top4_baskets.execute_demo_recovery_cycle(
         user_id=user_id,
         sid=sid,
+        starting_leg_stake=body.starting_leg_stake,
+    )
+
+
+@app.post("/sessions/{sid}/top4/capital-plan")
+def top4_capital_plan(
+    sid: int,
+    body: Top4CapitalPlan,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+    try:
+        top4_baskets._owned_session(db, user_id, sid)
+    finally:
+        db.close()
+
+    return top4_baskets.capital_plan(
+        body.starting_leg_stake
     )
 
 
@@ -107,7 +135,7 @@ def legacy_api_state():
         "ok": True,
         "service": "digitmatchstar-topn-api",
         "auth": "DERIV_OAUTH",
-        "topn_mode": "TOP4_RECOVERY_V16_STABLE_DUAL_MODE",
+        "topn_mode": "TOP4_RECOVERY_V17_CAPITAL_PLANNER",
         "min_top_n": 1,
         "max_top_n": 7,
         "default_top_n": 7,
