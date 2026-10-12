@@ -17,7 +17,7 @@ from .engine import engine
 class Top4BasketService:
     """Configurable simultaneous Top-N DEMO/REAL execution (1..7)."""
 
-    VERSION = "TOP4_RECOVERY_V18_REAL_EXECUTION_STATE"
+    VERSION = "TOP4_V19_DEMO_FRESH_PROPOSAL_BUY"
     MIN_TOP_N = 1
     MAX_TOP_N = 7
     MIN_LEG_STAKE = 0.35
@@ -481,92 +481,103 @@ class Top4BasketService:
                 s.updated_at = datetime.utcnow()
                 db.commit()
 
+                # Each Deriv proposal ID is short-lived and scoped to its
+                # originating authenticated connection. Do not prepare all
+                # quotes and only then begin buying: older quote IDs can
+                # become invalid before use.
+                #
+                # For DEMO: request -> BUY immediately, one leg at a time.
+                # Do not retry a BUY on ambiguous responses: the contract may
+                # already exist and resubmitting risks duplicate exposure.
+                # REAL execution remains on the original explicitly initiated
+                # basket path; never silently change its trade semantics.
                 proposal_batch_started = datetime.utcnow()
-
-                proposal_rows = await client.proposal_digitmatch_batch(
-                    symbol=s.symbol,
-                    legs=frozen_legs,
-                    duration=1,
-                    currency=currency,
-                )
-
                 prepared = []
                 preparation_failures = []
+                results = []
 
-                for row in proposal_rows:
-                    leg = row.get("leg") or {}
-                    error = row.get("error")
-                    proposal = row.get("proposal") or {}
+                if mode == "DEMO":
+                    s.phase = "TOP4_DEMO_BUYING"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
 
-                    if error is not None:
-                        preparation_failures.append(
-                            f"rank #{leg.get('rank')}: {error}"
-                        )
-                        continue
-
-                    p = proposal.get("proposal") or {}
-                    proposal_id = str(p.get("id") or "")
-
-                    if not proposal_id:
-                        preparation_failures.append(
-                            f"rank #{leg.get('rank')}: no proposal id"
-                        )
-                        continue
-
-                    prepared.append({
-                        **leg,
-                        "proposal_id": proposal_id,
-                        "ask_price": float(
-                            p.get("ask_price") or leg["stake"]
-                        ),
-                        "payout": float(p.get("payout") or 0),
-                        "spot": p.get("spot"),
-                        "proposal_received_at": datetime.utcnow().isoformat(),
-                    })
-
-                # Do not submit a partial intentional Top-4 basket if proposal
-                # preparation itself failed. This avoids knowingly starting
-                # with fewer covered digits.
-                if len(prepared) != top_n:
-                    raise HTTPException(
-                        502,
-                        f"Prepared {len(prepared)}/{top_n} Top-{top_n} proposals. "
-                        + " | ".join(preparation_failures[:top_n]),
+                    for leg in frozen_legs:
+                        try:
+                            response = await client.proposal_digitmatch(
+                                symbol=s.symbol,
+                                digit=int(leg["digit"]),
+                                amount=float(leg["stake"]),
+                                duration=1,
+                                currency=currency,
+                            )
+                            proposal = response.get("proposal") or {}
+                            proposal_id = str(proposal.get("id") or "")
+                            if not proposal_id:
+                                raise RuntimeError("Deriv response has no proposal id")
+                            ask_price = float(proposal.get("ask_price") or leg["stake"])
+                            item = {
+                                **leg,
+                                "proposal_id": proposal_id,
+                                "ask_price": ask_price,
+                                "payout": float(proposal.get("payout") or 0),
+                                "spot": proposal.get("spot"),
+                                "proposal_received_at": datetime.utcnow().isoformat(),
+                            }
+                            # Must use the same client and connection as proposal.
+                            # Buy exactly once. Do not retry an uncertain purchase.
+                            buy_result = await client.buy(proposal_id, ask_price, demo=True)
+                            results.append({**item, "deriv_buy": buy_result})
+                        except Exception as exc:
+                            results.append(exc)
+                else:
+                    # Preserve pre-existing explicit REAL execution behaviour.
+                    proposal_rows = await client.proposal_digitmatch_batch(
+                        symbol=s.symbol, legs=frozen_legs,
+                        duration=1, currency=currency,
                     )
-
-                s.phase = f"TOP4_{mode}_BUYING"
-                s.updated_at = datetime.utcnow()
-                db.commit()
-
-                async def buy_prepared(item):
-                    if mode == "REAL":
-                        buy_result = await client.request(
-                            {
-                                "buy": item["proposal_id"],
-                                "price": float(item["ask_price"]),
-                            },
-                            timeout=10,
+                    for row in proposal_rows:
+                        leg = row.get("leg") or {}
+                        error = row.get("error")
+                        proposal = row.get("proposal") or {}
+                        if error is not None:
+                            preparation_failures.append(
+                                f"rank #{leg.get('rank')}: {error}"
+                            )
+                            continue
+                        p = proposal.get("proposal") or {}
+                        proposal_id = str(p.get("id") or "")
+                        if not proposal_id:
+                            preparation_failures.append(
+                                f"rank #{leg.get('rank')}: no proposal id"
+                            )
+                            continue
+                        prepared.append({
+                            **leg,
+                            "proposal_id": proposal_id,
+                            "ask_price": float(p.get("ask_price") or leg["stake"]),
+                            "payout": float(p.get("payout") or 0),
+                            "spot": p.get("spot"),
+                            "proposal_received_at": datetime.utcnow().isoformat(),
+                        })
+                    if len(prepared) != top_n:
+                        raise HTTPException(
+                            502,
+                            f"Prepared {len(prepared)}/{top_n} Top-{top_n} proposals. "
+                            + " | ".join(preparation_failures[:top_n]),
                         )
-                    else:
-                        buy_result = await client.buy(
-                            item["proposal_id"],
-                            item["ask_price"],
-                            demo=True,
-                        )
-
-                    return {
-                        **item,
-                        "deriv_buy": buy_result,
-                    }
-
-                # All four BUY requests are launched together after every quote
-                # is prepared. This keeps the actual Top-4 contract opening much
-                # more tightly synchronized than proposal->buy per leg.
-                results = await asyncio.gather(
-                    *[buy_prepared(item) for item in prepared],
-                    return_exceptions=True,
-                )
-
+                    s.phase = "TOP4_REAL_BUYING"
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+                    async def buy_real_prepared(item):
+                        result = await client.request({
+                            "buy": item["proposal_id"],
+                            "price": float(item["ask_price"]),
+                        }, timeout=10)
+                        return {**item, "deriv_buy": result}
+                    results = await asyncio.gather(
+                        *[buy_real_prepared(item) for item in prepared],
+                        return_exceptions=True,
+                    )
 
                 failures = list(preparation_failures)
                 opened = []

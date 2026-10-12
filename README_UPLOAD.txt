@@ -1,18 +1,11 @@
-TRADEIN TOP-4 FULL REPLACEMENT FILES
+Tradein Top-4 full-file replacement | 2026-10-12
 
-These are complete replacement files, not patch scripts.
-Copy each file into the same path in BasilOkoth/tradein and redeploy frontend and Render backend.
+Root folder contains COMPLETE files with original repository paths.
+Replace corresponding files in your repository and deploy in DEMO first.
 
-Changes:
-- Tick-scored ranking snapshots include a canonical tick epoch.
-- Reading ranking status no longer repeatedly overwrites tick provenance.
-- Top-N basket uses last tick-scored ranking snapshot.
-- Top-N interface automatically arms server tick feed when session exists, refreshes shared server rankings, and updates while basket is processing.
-- Concurrency guard avoids overlapping status polls; errors are logged.
-- Frontend cache-busting versions updated.
+Root cause addressed: four prepared proposal IDs were accumulated before any buy; all 4 buy requests then failed InvalidContractProposal/Unknown contract proposal.
+DEMO now requests a fresh proposal and buys it immediately for each leg, with one buy attempt per leg. No automatic retry on a failed or ambiguous BUY. This changes the 4-leg basket from near-simultaneous purchase to sequential purchases, so legs can execute on different ticks. The system still reports partial opening and requires reconciliation. Do NOT interpret the four legs as simultaneous exposure.
 
-Safety: does NOT remove explicit real-money buy confirmation and does NOT suppress duplicate-order/settlement checks.
+REAL code path was not converted to this sequential approach. REAL purchases still require existing explicit user actions. Check server logs and live Deriv API separately before using real funds.
 
-Validation: Python compileall and Node.js --check passed. No live Deriv deployment or purchase testing was performed.
-
-Testing: Set DEMO, establish server session, verify ranking after >= 10 server ticks, leave open without clicking Refresh, confirm rank changes and Top-N status updates. Run a small demo cycle and inspect browser/network and Render logs if slow.
+Verification: Python modules compile; JS syntax checks pass. No live trades/API validation was performed. Review deployment errors and inspect the account balance for any uncertain order before attempting again.
