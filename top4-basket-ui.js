@@ -11,7 +11,12 @@
     busy: false,
     pollTimer: null,
     audioCtx: null,
-    lastSoundKey: null
+    lastSoundKey: null,
+    refreshInFlight: false,
+    armInFlight: false,
+    armedSessionId: 0,
+    lastArmAttempt: 0,
+    lastPollError: null
   };
   const money = n => `$${Number(n || 0).toFixed(2)}`;
 
@@ -242,6 +247,10 @@
 
     const topN = selectedTopN();
     const selected = currentRanking().slice(0, topN);
+    if (state.lastPollError) {
+      const detail = document.getElementById('top4-basket-status');
+      if (detail && !state.busy) detail.textContent = `Sync issue: ${state.lastPollError}`;
+    }
     const mode = String(sessionState()?.account_mode || '—').toUpperCase();
 
     document.getElementById('top4-mode').textContent = mode;
@@ -364,14 +373,36 @@
   }
 
   async function refreshStatus() {
+    if (state.refreshInFlight) return;
     const sid = sessionId();
-    if (!sid) return render();
-
+    if (!sid) { render(); return; }
+    state.refreshInFlight = true;
     try {
+      // Do not rely on manual Refresh to initialize the canonical tick feed.
+      // This call only subscribes to ticks and never submits any trade.
+      const now = Date.now();
+      if (state.armedSessionId !== sid && !state.armInFlight &&
+          now - state.lastArmAttempt >= 8000) {
+        state.lastArmAttempt = now;
+        state.armInFlight = true;
+        try {
+          await api(`/sessions/${sid}/top4/arm`, {method:'POST'});
+          state.armedSessionId = sid;
+        } catch (err) {
+          state.lastPollError = `Tick feed: ${err.message}`;
+        } finally { state.armInFlight = false; }
+      }
+      // Shared session state owns DigitScore; Top-4 status alone cannot refresh it.
+      if (typeof window.pollServerExecutionState === 'function') {
+        await window.pollServerExecutionState();
+      }
       const data = await api(`/sessions/${sid}/top4/status`);
       state.latest = data.latest || null;
-    } catch (_) {}
-    render();
+      state.lastPollError = null;
+    } catch (err) {
+      state.lastPollError = err.message;
+      console.warn('[Top4] Status refresh failed:', err);
+    } finally { state.refreshInFlight = false; render(); }
   }
 
   async function exportData() {
@@ -396,11 +427,18 @@
   function start() {
     ensurePanel();
     render();
+    if (state.pollTimer) clearInterval(state.pollTimer);
     refreshStatus();
     state.pollTimer = setInterval(() => {
       render();
-      if (!state.busy) refreshStatus();
-    }, 1000);
+      // Keep observing while a basket is executing; never submit another BUY.
+      refreshStatus();
+    }, 750);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshStatus();
+    });
+    window.addEventListener('focus', refreshStatus);
+    window.addEventListener('digitmatchstar:tick', render);
   }
 
   if (document.readyState === 'loading') {

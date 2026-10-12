@@ -12,8 +12,8 @@
     '/candidate-tick-dna-v3-shadow.js?v=3.7-exact-aligned-cloud',
     '/passive-forward-readiness-v1.js?v=1.0',
     '/trade-alignment-export.js?v=1.0',
-    '/tick-rank-sync-v1.1.js?v=1.1',
-    '/top4-basket-ui.js?v=1.0'
+    '/tick-rank-sync-v1.1.js?v=1.2-auto',
+    '/top4-basket-ui.js?v=1.2-auto'
   ];
 
   function alreadyLoaded(src) {

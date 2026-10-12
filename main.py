@@ -1,0 +1,674 @@
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, Depends, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
+from pydantic import BaseModel
+
+from .config import settings
+from .db import SessionLocal
+from .models import TradingSession, DerivAccount
+from .security import current_user_id
+from .oauth import router as oauth_router
+from .engine import engine
+
+
+app = FastAPI(
+    title="DigitMatchStar Production OAuth Backend",
+    version="3.1.0-live-top-digit",
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _normalise_origin(value: str) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def _cors_origins():
+    values = {
+        _normalise_origin(settings.frontend_url),
+        "https://digitmatchstar.com",
+        "https://www.digitmatchstar.com",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    }
+
+    configured = _normalise_origin(settings.frontend_url)
+
+    if configured:
+        try:
+            parsed = urlparse(configured)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                host = parsed.hostname
+                port = f":{parsed.port}" if parsed.port else ""
+                if host.startswith("www."):
+                    values.add(f"{parsed.scheme}://{host[4:]}{port}")
+                else:
+                    values.add(f"{parsed.scheme}://www.{host}{port}")
+        except Exception:
+            pass
+
+    return sorted(x for x in values if x)
+
+
+ALLOWED_ORIGINS = _cors_origins()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+app.include_router(oauth_router)
+
+
+class SessionCreate(BaseModel):
+    account_id: str
+    symbol: str = "R_10"
+    base_stake: float = 1.0
+    multiplier: float = 1.15
+    max_trades: int = 15
+
+
+class Candidate(BaseModel):
+    digit: int
+
+
+@app.on_event("startup")
+async def startup():
+    await engine.start()
+
+
+def _origin_from_request(request: Request) -> str:
+    return str(request.base_url).rstrip("/")
+
+
+@app.get("/", include_in_schema=False)
+def root(request: Request):
+    """
+    Serve the secure OAuth landing page.
+
+    This is deliberately NOT bot.html. bot.html contains an auth guard that
+    redirects unauthenticated visitors to '/', so serving bot.html at '/'
+    creates an endless reload loop.
+    """
+    index_path = REPO_ROOT / "index.html"
+    if not index_path.is_file():
+        raise HTTPException(status_code=404, detail="index.html not found")
+
+    html = index_path.read_text(encoding="utf-8")
+    origin = _origin_from_request(request)
+
+    # Force this deployment to use its own backend instead of the old API host.
+    html = html.replace(
+        'const DMS_API = "https://digitmatchstar-api.onrender.com";',
+        f'const DMS_API = "{origin}";',
+    )
+    return HTMLResponse(html)
+
+
+@app.get("/bot", include_in_schema=False)
+@app.get("/bot.html", include_in_schema=False)
+def bot_ui(request: Request):
+    """Serve the authenticated full bot UI from this same Render service."""
+    bot_path = REPO_ROOT / "bot.html"
+    if not bot_path.is_file():
+        raise HTTPException(status_code=404, detail="bot.html not found")
+
+    html = bot_path.read_text(encoding="utf-8")
+    origin = _origin_from_request(request)
+
+    # The original bot belongs to the primary DigitMatchStar deployment and
+    # contains that API URL in several places. This Top-4 deployment must use
+    # itself for OAuth, sessions, balances and server execution.
+    html = html.replace(
+        "https://digitmatchstar-api.onrender.com",
+        origin,
+    )
+
+    # In secure SERVER mode, the backend owns the authenticated Deriv channel.
+    # Do not run the old browser raw-token websocket bootstrap, which otherwise
+    # reports Offline because secure OAuth intentionally does not expose a raw
+    # Deriv token to the browser.
+    old_bootstrap = """setTimeout(() => {
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);"""
+    new_bootstrap = """setTimeout(() => {
+                if (window.SERVER_EXECUTION?.enabled) {
+                    log('☁ Secure server execution active · authenticated Deriv channel stays on backend', 'SYSTEM');
+                    updateConnectionStatus();
+                    return;
+                }
+
+                if (!window.ws ||
+                    (window.ws.readyState !== WebSocket.OPEN &&
+                     window.ws.readyState !== WebSocket.CONNECTING)) {
+                    log('💳 Connecting authenticated account channel for balance...', 'SYSTEM');
+                    connectWebSocket();
+                }
+            }, 700);"""
+    html = html.replace(old_bootstrap, new_bootstrap)
+
+    # Make page scrolling resilient even if a stale mobile/browser style has
+    # locked the body.
+    scroll_fix = """
+<style id="dms-render-scroll-fix">
+html, body {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior-y: auto !important;
+}
+body {
+    position: static !important;
+    touch-action: pan-y !important;
+}
+</style>
+"""
+    html = html.replace("</head>", scroll_fix + "\n</head>", 1)
+
+    return HTMLResponse(html)
+
+
+FRONTEND_JS = {
+    "research-suite-loader.js",
+    "passive-forward-readiness-v1.js",
+    "tail-risk-model-v1.2-combined.js",
+    "tick-rank-sync-v1.1.js",
+    "top4-basket-ui.js",
+    "trade-alignment-export.js",
+}
+
+
+@app.get("/research-suite-loader.js", include_in_schema=False)
+@app.get("/passive-forward-readiness-v1.js", include_in_schema=False)
+@app.get("/tail-risk-model-v1.2-combined.js", include_in_schema=False)
+@app.get("/tick-rank-sync-v1.1.js", include_in_schema=False)
+@app.get("/top4-basket-ui.js", include_in_schema=False)
+@app.get("/trade-alignment-export.js", include_in_schema=False)
+def frontend_js(request: Request):
+    name = Path(request.url.path).name
+    if name not in FRONTEND_JS:
+        raise HTTPException(status_code=404, detail="Frontend asset not found")
+
+    asset = REPO_ROOT / name
+    if not asset.is_file():
+        raise HTTPException(status_code=404, detail=f"{name} not found")
+
+    return FileResponse(asset, media_type="application/javascript")
+
+
+@app.get("/screen-recorder-safe-v5-2.js", include_in_schema=False)
+def optional_screen_recorder_stub():
+    return Response(
+        content='console.info("[DigitMatchStar] Optional screen recorder module is not installed.");',
+        media_type="application/javascript",
+    )
+
+
+@app.get("/api/state")
+def api_state_compat():
+    return {
+        "ok": True,
+        "service": "digitmatchstar-top4-api",
+        "backend": "DigitMatchStar Production OAuth Backend",
+        "top4": True,
+        "health": "/health",
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "version": "3.1.0-live-top-digit",
+        "frontend_origin": _normalise_origin(settings.frontend_url),
+        "allowed_origins": ALLOWED_ORIGINS,
+        "strategy": {
+            "name": "LIVE_TOP_DIGIT",
+            "target_policy": "rank_1_each_canonical_tick",
+            "multi_loss_target_lock": False,
+        },
+    }
+
+
+def owns_session(db, user_id, sid):
+    s = db.get(TradingSession, sid)
+
+    if not s or s.user_id != user_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+        )
+
+    return s
+
+
+def digit_score_for_session(session_id: int):
+    scorer = getattr(engine, "_score_all_digits", None)
+
+    if not callable(scorer):
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "error": "Digit score engine is not available",
+        }
+
+    try:
+        # Read the last tick-scored rank; an API GET must not overwrite the
+        # ranking provenance or generate a phantom new scoring event.
+        sid = int(session_id)
+        snapshot = dict(engine.digit_score_snapshots.get(sid) or {})
+        if not snapshot:
+            return {"ready": False, "ranking": [], "selected_digit": None,
+                    "history_count": len(engine._digit_history(sid)),
+                    "minimum_history": engine.digit_scorer.min_history,
+                    "feed_state": "WAITING_FOR_TICKS"}
+        snapshot["feed_state"] = ("LIVE_RANK" if snapshot.get("ready")
+                                  else "WARMING")
+        return snapshot
+    except Exception as exc:
+        return {
+            "ready": False,
+            "ranking": [],
+            "selected_digit": None,
+            "history_count": 0,
+            "minimum_history": 10,
+            "error": str(exc),
+        }
+
+
+@app.get("/sessions")
+def sessions(user_id: str = Depends(current_user_id)):
+    db = SessionLocal()
+
+    try:
+        rows = (
+            db.query(TradingSession)
+            .filter(TradingSession.user_id == user_id)
+            .all()
+        )
+
+        result = []
+
+        for s in rows:
+            acct = (
+                db.query(DerivAccount)
+                .filter(
+                    DerivAccount.user_id == user_id,
+                    DerivAccount.account_id == s.account_id,
+                )
+                .first()
+            )
+
+            result.append(
+                {
+                    "id": s.id,
+                    "account_id": s.account_id,
+                    "account_mode": s.account_mode,
+                    "account_balance": acct.balance if acct else None,
+                    "account_currency": acct.currency if acct else None,
+                    "symbol": s.symbol,
+                    "running": s.running,
+                    "paused": s.paused,
+                    "phase": s.phase,
+                    "current_trade": s.current_trade,
+                    "max_trades": s.max_trades,
+                    "current_stake": s.current_stake,
+                    "candidate_digit": s.candidate_digit,
+                    "open_contract_id": s.open_contract_id,
+                    "pnl": s.pnl,
+                    "pending_real_confirmation": s.pending_real_confirmation,
+                    "last_error": s.last_error,
+                    "digit_score": digit_score_for_session(s.id),
+                    "target_policy": "rank_1_each_canonical_tick",
+                    "last_settlement": engine.last_settlement_status(s.id),
+                }
+            )
+
+        return result
+
+    finally:
+        db.close()
+
+
+@app.get("/sessions/{sid}/tae/export")
+def removed_tae_export(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+    try:
+        owns_session(db, user_id, sid)
+    finally:
+        db.close()
+
+    return {
+        "schema": "DIGITMATCHSTAR_LIVE_TOP_DIGIT",
+        "session_id": sid,
+        "message": (
+            "Target Attraction execution was retired. "
+            "The active system scores digits 0-9 and uses the current "
+            "rank #1 as the next target without a multi-loss target lock."
+        ),
+        "digit_score": digit_score_for_session(sid),
+    }
+
+
+@app.post("/sessions")
+def create_session(
+    body: SessionCreate,
+    user_id: str = Depends(current_user_id),
+):
+    if body.base_stake <= 0:
+        raise HTTPException(status_code=400, detail="base_stake must be > 0")
+
+    if body.multiplier < 1:
+        raise HTTPException(status_code=400, detail="multiplier must be >= 1")
+
+    if body.max_trades < 1:
+        raise HTTPException(status_code=400, detail="max_trades must be >= 1")
+
+    db = SessionLocal()
+
+    try:
+        acct = (
+            db.query(DerivAccount)
+            .filter(
+                DerivAccount.user_id == user_id,
+                DerivAccount.account_id == body.account_id,
+            )
+            .first()
+        )
+
+        if not acct:
+            raise HTTPException(
+                status_code=400,
+                detail="Deriv account does not belong to this user",
+            )
+
+        account_type = str(acct.account_type or "").lower()
+        mode = "DEMO" if account_type == "demo" else "REAL"
+
+        s = (
+            db.query(TradingSession)
+            .filter(
+                TradingSession.user_id == user_id,
+                TradingSession.account_id == body.account_id,
+            )
+            .first()
+        )
+
+        if not s:
+            s = TradingSession(
+                user_id=user_id,
+                account_id=body.account_id,
+                account_mode=mode,
+            )
+            db.add(s)
+            db.flush()
+
+        if s.open_contract_id:
+            s.running = False
+            s.paused = False
+            s.phase = "RECONCILE_REQUIRED"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(s)
+
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "reconcile_required": True,
+                "open_contract_id": s.open_contract_id,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        if s.running:
+            return {
+                "id": s.id,
+                "account_id": s.account_id,
+                "account_mode": s.account_mode,
+                "symbol": s.symbol,
+                "phase": s.phase,
+                "running": True,
+                "already_running": True,
+                "reconcile_required": False,
+                "open_contract_id": None,
+                "current_trade": s.current_trade,
+                "max_trades": s.max_trades,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        s.account_mode = mode
+        s.symbol = body.symbol
+        s.base_stake = float(body.base_stake)
+        s.current_stake = float(body.base_stake)
+        s.multiplier = float(body.multiplier)
+        s.max_trades = int(body.max_trades)
+
+        s.current_trade = 0
+        s.pnl = 0.0
+        s.running = False
+        s.paused = False
+        s.pending_real_confirmation = False
+        s.pending_trade_json = None
+        s.last_error = None
+        s.phase = "CONFIGURED"
+        s.updated_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(s)
+
+        return {
+            "id": s.id,
+            "account_id": s.account_id,
+            "account_mode": s.account_mode,
+            "symbol": s.symbol,
+            "phase": s.phase,
+            "reconcile_required": False,
+            "current_trade": s.current_trade,
+            "max_trades": s.max_trades,
+            "candidate_digit": s.candidate_digit,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/candidate")
+def candidate(
+    sid: int,
+    body: Candidate,
+    user_id: str = Depends(current_user_id),
+):
+    if body.digit < 0 or body.digit > 9:
+        raise HTTPException(
+            status_code=400,
+            detail="digit must be 0..9",
+        )
+
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if s.running:
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "already_running": True,
+                "reconciling": bool(s.open_contract_id),
+                "open_contract_id": s.open_contract_id,
+                "candidate_digit": s.candidate_digit,
+            }
+
+        if s.open_contract_id:
+            return {
+                "ok": True,
+                "session_id": s.id,
+                "candidate_digit": s.candidate_digit,
+                "reconcile_required": True,
+            }
+
+        s.candidate_digit = int(body.digit)
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "session_id": s.id,
+            "candidate_digit": s.candidate_digit,
+            "reconcile_required": False,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/start")
+def start(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        if s.open_contract_id:
+            s.running = True
+            s.paused = False
+            s.phase = "RECONCILING"
+            s.last_error = None
+            s.updated_at = datetime.utcnow()
+            db.commit()
+
+            return {
+                "ok": True,
+                "id": s.id,
+                "phase": s.phase,
+                "reconciling": True,
+                "open_contract_id": s.open_contract_id,
+            }
+
+        if s.candidate_digit is None:
+            s.candidate_digit = 5
+
+        s.running = True
+        s.paused = False
+        s.phase = "STARTING"
+        s.last_error = None
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "id": s.id,
+            "phase": s.phase,
+            "reconciling": False,
+            "candidate_digit": s.candidate_digit,
+            "max_trades": s.max_trades,
+            "target_policy": "rank_1_each_canonical_tick",
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/pause")
+def pause(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+        s.paused = True
+        s.phase = "PAUSED"
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "phase": s.phase,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/stop")
+def stop(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    db = SessionLocal()
+
+    try:
+        s = owns_session(db, user_id, sid)
+
+        s.running = False
+        s.paused = False
+
+        if s.open_contract_id:
+            s.phase = "STOPPED_WAITING_SETTLEMENT"
+        else:
+            s.phase = "STOPPED"
+
+        s.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "ok": True,
+            "phase": s.phase,
+            "open_contract_id": s.open_contract_id,
+        }
+
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/real/confirm")
+async def confirm_real(
+    sid: int,
+    user_id: str = Depends(current_user_id),
+):
+    try:
+        await engine.confirm_real(user_id, sid)
+
+        return {
+            "ok": True,
+            "session_id": sid,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        )

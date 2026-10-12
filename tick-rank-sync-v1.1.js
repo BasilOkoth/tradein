@@ -125,9 +125,11 @@
 
     const browserDigit = Number(browser.digit);
     const serverDigit = Number(serverTick.digit);
-    const rankDigit = Number(score.selected_digit);
-    const shadowDigit = Number(shadow.selected_digit);
-    const nextDigit = Number(st?.live_next_target ?? score.target_digit ?? score.selected_digit);
+    const validDigit = value => value === null || value === undefined || value === ''
+      ? NaN : Number(value);
+    const rankDigit = validDigit(score.selected_digit);
+    const shadowDigit = validDigit(shadow.selected_digit);
+    const nextDigit = validDigit(st?.live_next_target ?? score.target_digit ?? score.selected_digit);
 
     setText('dms-sync-browser',
       Number.isInteger(browserDigit) ? `digit ${browserDigit}` : '—');

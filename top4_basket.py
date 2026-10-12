@@ -87,7 +87,7 @@ class Top4BasketService:
 
     @staticmethod
     def _ranking_snapshot(sid, top_n):
-        score = engine._score_all_digits(int(sid))
+        score = dict(engine.digit_score_snapshots.get(int(sid)) or {})
         ranking = sorted(
             list(score.get("ranking") or []),
             key=lambda row: float(row.get("score") or 0),
