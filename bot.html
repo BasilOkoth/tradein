@@ -7,7 +7,7 @@
 <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>Deriv DigitMatchStar Bot · Browser Trading</title>
+<title>Deriv DigitMatchStar Bot · Secure Trading</title>
 <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
 <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
 <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
@@ -11400,7 +11400,7 @@ window.executionLock = true;
         }
 
 window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
-            enabled: false, // Browser-only interface: never restore legacy server mode
+            enabled: true, // Secure backend trading: raw Deriv OAuth token stays on server
             apiUrl: (
                 sessionStorage.getItem('dms_server_execution_url') ||
                 localStorage.getItem('dms_server_execution_url') ||
@@ -14218,11 +14218,15 @@ function toggleServerContinuousResearch() {
 
 
         function ensureServerExecutionPolling() {
-            // Deliberately disabled: this edition trades directly in the browser.
-            if (window.SERVER_EXECUTION?.pollTimer) {
-                clearInterval(window.SERVER_EXECUTION.pollTimer);
-                window.SERVER_EXECUTION.pollTimer = null;
-            }
+            const s = window.SERVER_EXECUTION;
+            if (!s?.enabled || !s.apiUrl || s.pollTimer) return;
+            s.pollTimer = setInterval(() => {
+                if (!s.enabled || s.pollPending) return;
+                s.pollPending = true;
+                Promise.resolve(pollServerExecutionState())
+                    .catch(err => console.warn('Server state sync:', err))
+                    .finally(() => { s.pollPending = false; });
+            }, 1500);
         }
 
         function configureServerExecutionUrl() {
@@ -14238,9 +14242,10 @@ function toggleServerContinuousResearch() {
         }
 
         async function toggleServerExecutionMode() {
-            // Server execution was removed from this browser-only edition.
-            if (window.SERVER_EXECUTION) window.SERVER_EXECUTION.enabled = false;
-            return false;
+            // UI mode switch deliberately removed. Secure server is the only
+            // permitted purchase owner; never fall back to raw browser tokens.
+            if (window.SERVER_EXECUTION) window.SERVER_EXECUTION.enabled = true;
+            return true;
         }
 
         function getConfiguredMinimumV1Margin() {
@@ -14928,27 +14933,56 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
-        // Browser-only START/STOP: never call legacy /sessions/* routes.
-        // A separate Deriv trading websocket handles browser purchases.
+        // Secure authenticated backend owns all BUY and settlement operations.
+        // START/STOP remains a single visible control; no server settings panel.
         async function toggleBot() {
-            if (window.SERVER_EXECUTION) {
-                window.SERVER_EXECUTION.enabled = false;
-                window.SERVER_EXECUTION.startPending = false;
-                if (window.SERVER_EXECUTION.pollTimer) {
-                    clearInterval(window.SERVER_EXECUTION.pollTimer);
-                    window.SERVER_EXECUTION.pollTimer = null;
-                }
+            const server = window.SERVER_EXECUTION;
+            if (!server) {
+                updateTradeStatus('ERROR', 'Server client missing', 'Reload the trading page', 'loss');
+                return;
             }
-            if (window.isBotRunning) {
+            server.enabled = true;
+            if (server.startPending) return;
+            if (window.isBotRunning || server.state?.running) {
                 window.__dmsManualStopRequested = true;
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
                 }
-                stopBot('Manual STOP');
+                try {
+                    await stopServerExecutionSession();
+                    stopBot('Manual STOP');
+                } catch (e) {
+                    log(`❌ Server STOP failed: ${e.message}`, 'ERROR');
+                    updateTradeStatus('ERROR', 'STOP confirmation unavailable',
+                        'Check backend session state before restarting', 'loss');
+                }
                 return;
             }
             window.__dmsManualStopRequested = false;
-            startBot();
+            server.startPending = true;
+            try {
+                if (!getPlatformJwt()) throw new Error('Platform session missing. Reconnect through Deriv.');
+                // startBot validates JWT and sets the display state. It must
+                // NOT submit browser purchases when server.enabled is true.
+                startBot();
+                if (!window.isBotRunning) throw new Error('START prerequisites not met');
+                const started = await startServerExecutionSession();
+                if (!started) throw new Error('Backend session could not start');
+                ensureServerExecutionPolling();
+                await pollServerExecutionState();
+                updateButtonState();
+                updateTradeStatus('SERVER ACTIVE', 'Trading session started',
+                    'Deriv contract settlement remains authoritative', 'trade');
+            } catch (e) {
+                log(`❌ START failed: ${e.message}`, 'ERROR');
+                // Never silently downgrade to browser trading on a backend 404.
+                try { stopBot('Server START failed'); } catch (_) {}
+                updateTradeStatus('ERROR', 'Secure trading START failed',
+                    `${e.message} — verify deployed API URL and route`, 'loss');
+            } finally {
+                server.startPending = false;
+                updateButtonState();
+            }
         }
 
         // V2.5: explicitly expose the core controls. The overnight controller
