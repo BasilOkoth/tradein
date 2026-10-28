@@ -737,13 +737,9 @@
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
 <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
 </div>
-<!-- Minimum V1 Margin -->
-<div>
-<label class="block text-xs font-semibold text-gray-300 mb-1" for="minV1Margin">Minimum V1 Margin</label>
-<input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-cyan-500 focus:ring-cyan-500 py-1.5 px-2 text-sm"
-       id="minV1Margin" min="0" max="50" step="0.1" type="number" value="3.0"/>
-<p class="text-[10px] text-gray-500 mt-1">BUY only when V1 #1 leads V1 #2 by at least this margin.</p>
-</div>
+<!-- Backend has no configurable minimum V1 margin API; keep a hidden input
+     for legacy DOM readers without advertising a nonfunctional control. -->
+<input id="minV1Margin" type="hidden" value="0" />
 <!-- Max Trades is now the single user-defined cycle cap -->
 <div class="flex items-end">
 <p class="text-[11px] leading-relaxed text-gray-400">
@@ -14279,52 +14275,12 @@ function toggleServerContinuousResearch() {
             };
         }
 
+        // This backend has no POST /sessions/{sid}/margin-gate endpoint.
+        // Keep this compatibility hook as a no-op so START does not fail with 404.
+        // IMPORTANT: the former UI minimum-margin input was removed because this
+        // deployment cannot enforce that setting. Engine-side ranking still runs.
         async function syncServerMarginGate(force = false) {
-            const s = window.SERVER_EXECUTION;
-            if (!s?.enabled || !s.sessionId || s.marginSyncPending) return null;
-
-            const desired = getConfiguredMinimumV1Margin();
-            const serverValue = Number(
-                s.state?.digit_score?.minimum_v1_margin
-            );
-
-            if (
-                !force &&
-                Number.isFinite(serverValue) &&
-                Math.abs(serverValue - desired) < 0.0001
-            ) {
-                return null;
-            }
-
-            const now = Date.now();
-            if (!force && now - Number(s.lastMarginSyncAt || 0) < 1200) {
-                return null;
-            }
-
-            s.marginSyncPending = true;
-            s.lastMarginSyncAt = now;
-
-            try {
-                const result = await serverExecRequest(
-                    `/sessions/${s.sessionId}/margin-gate`,
-                    {
-                        method: 'POST',
-                        body: { minimum_margin: desired }
-                    }
-                );
-
-                if (s.state?.digit_score) {
-                    s.state.digit_score.minimum_v1_margin =
-                        Number(result.minimum_v1_margin);
-                    s.state.digit_score.margin_eligible =
-                        Boolean(result.margin_eligible);
-                    s.state.digit_score.margin_status =
-                        result.margin_status || null;
-                }
-                return result;
-            } finally {
-                s.marginSyncPending = false;
-            }
+            return null;
         }
 
         async function startServerExecutionSession() {
