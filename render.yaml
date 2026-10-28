@@ -3,13 +3,11 @@ services:
     name: digitmatchstar-top4-api
     env: python
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.top4_main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.fast_main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
-
       - key: DATABASE_URL
         sync: false
       - key: DERIV_CLIENT_ID
@@ -31,7 +29,7 @@ services:
       - key: FRONTEND_URL
         sync: false
       - key: ALLOW_REAL_MODE
-        value: "true"
+        value: "false"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHAT_ID
