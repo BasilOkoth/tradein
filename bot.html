@@ -7974,7 +7974,7 @@ const isRecommended = engine.currentRecommendation && engine.currentRecommendati
             const mode = String(requestedMode || 'DEMO').toUpperCase();
             const apiUrl = String(
                 window.SERVER_EXECUTION?.apiUrl ||
-                'https://digitmatchstar-api.onrender.com'
+                'https://digitmatchstar-top4-api.onrender.com'
             ).replace(/\/+$/, '');
 
             // Do not let an old DEMO session id pin polling to the wrong account
@@ -11277,7 +11277,7 @@ window.executionLock = true;
 
             const apiUrl = String(
                 window.SERVER_EXECUTION?.apiUrl ||
-                'https://digitmatchstar-api.onrender.com'
+                'https://digitmatchstar-top4-api.onrender.com'
             ).replace(/\/+$/, '');
 
             state.inFlight = true;
@@ -11399,19 +11399,24 @@ window.executionLock = true;
             }, state.intervalMs);
         }
 
-window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
+// Ignore obsolete API URL preferences left by earlier browser-only builds.
+        try {
+            sessionStorage.removeItem('dms_server_execution_url');
+            localStorage.removeItem('dms_server_execution_url');
+            sessionStorage.removeItem('dms_server_session_id');
+            localStorage.removeItem('dms_server_session_id');
+        } catch (_) {}
+        window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
             enabled: true, // Secure backend trading: raw Deriv OAuth token stays on server
             apiUrl: (
-                sessionStorage.getItem('dms_server_execution_url') ||
-                localStorage.getItem('dms_server_execution_url') ||
-                'https://digitmatchstar-api.onrender.com'
+                // The tradein Render service runs app.top4_main, which includes
+                // the standard authenticated /sessions/{sid}/start routes.
+                location.hostname === 'digitmatchstar-top4-api.onrender.com'
+                    ? location.origin
+                    : 'https://digitmatchstar-top4-api.onrender.com'
             ).replace(/\/+$/,''),
             state: null,
-            sessionId: Number(
-                sessionStorage.getItem('dms_server_session_id') ||
-                localStorage.getItem('dms_server_session_id') ||
-                0
-            ) || null,
+            sessionId: null, // Re-discover sessions from this backend; never reuse a stale ID.
             pollTimer: null,
             lastCandidateSent: null,
             lastTaeCandidateSyncAt: 0,
@@ -13373,7 +13378,11 @@ window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
                 localStorage.removeItem('bot_authenticated');
             }
             if (!res.ok) {
-                throw new Error(data?.detail || data?.error || `Server request failed (${res.status})`);
+                throw new Error(
+                    res.status === 404
+                        ? `API route missing: ${options.method || 'GET'} ${s.apiUrl}${path} (404). Verify this deployment is running app.top4_main:app or app.main:app.`
+                        : (data?.detail || data?.error || `Server request failed (${res.status})`)
+                );
             }
             return data;
         }
@@ -14231,7 +14240,7 @@ function toggleServerContinuousResearch() {
 
         function configureServerExecutionUrl() {
             const current = window.SERVER_EXECUTION.apiUrl || '';
-            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-api.onrender.com');
+            const raw = prompt('Enter the DigitMatchStar server execution API URL', current || 'https://digitmatchstar-top4-api.onrender.com');
             if (raw === null) return;
             const value = String(raw).trim().replace(/\/+$/,'');
             window.SERVER_EXECUTION.apiUrl = value;
