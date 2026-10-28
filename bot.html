@@ -7,7 +7,7 @@
 <!-- SAFE-TICK V1.6 STRICT ALIGNMENT + TELEGRAM DUAL-AUTH FIX 2026-10-05 -->
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>Deriv DigitMatchStar Bot</title>
+<title>Deriv DigitMatchStar Bot · Browser Trading</title>
 <!-- DigitMatchStar settlement safety fix V17: Deriv settlement authoritative before recovery -->
 <!-- V18 timing fix: authoritative settlement retained; INSTANT recovery re-arms immediately after confirmed loss -->
 <!-- V23 TICK-PIPELINE: exact expected paid tick drives immediate next-tick recovery; Deriv settlement reconciles in background -->
@@ -9547,8 +9547,7 @@ function rotateHybridDigit(reason = '') {
         document.addEventListener('DOMContentLoaded', () => {
             console.log('🤖 Bot initialized');
             setTimeout(() => {
-                renderServerExecutionState();
-                ensureServerExecutionPolling();
+                // Server dashboard intentionally removed.
             }, 250);
             startMinimizablePanelUI();
             runCanonicalDigitSelfTest();
@@ -11401,10 +11400,7 @@ window.executionLock = true;
         }
 
 window.SERVER_EXECUTION = window.SERVER_EXECUTION || {
-            enabled: (
-                sessionStorage.getItem('dms_server_execution_enabled') ??
-                localStorage.getItem('dms_server_execution_enabled')
-            ) !== '0',
+            enabled: false, // Browser-only interface: never restore legacy server mode
             apiUrl: (
                 sessionStorage.getItem('dms_server_execution_url') ||
                 localStorage.getItem('dms_server_execution_url') ||
@@ -14222,15 +14218,12 @@ function toggleServerContinuousResearch() {
 
 
         function ensureServerExecutionPolling() {
-            const s = window.SERVER_EXECUTION;
-
-            if (s.pollTimer) clearInterval(s.pollTimer);
-s.pollTimer = setInterval(
-                pollServerExecutionState,
-                750
-            );
-pollServerExecutionState();
-}
+            // Deliberately disabled: this edition trades directly in the browser.
+            if (window.SERVER_EXECUTION?.pollTimer) {
+                clearInterval(window.SERVER_EXECUTION.pollTimer);
+                window.SERVER_EXECUTION.pollTimer = null;
+            }
+        }
 
         function configureServerExecutionUrl() {
             const current = window.SERVER_EXECUTION.apiUrl || '';
@@ -14245,27 +14238,9 @@ pollServerExecutionState();
         }
 
         async function toggleServerExecutionMode() {
-            const s = window.SERVER_EXECUTION;
-            if (!s.enabled && !s.apiUrl) {
-                configureServerExecutionUrl();
-                if (!s.apiUrl) return;
-            }
-
-            if (window.isBotRunning || s.state?.running || s.state?.open_contract_id) {
-                alert('Stop the current session and let any open contract settle before changing execution engine.');
-                return;
-            }
-
-            if (s.enabled && !getStoredDerivToken()) {
-                alert('Browser trading mode requires a raw Deriv token and is disabled for secure OAuth users. Keep SERVER mode enabled.');
-                return;
-            }
-            s.enabled = !s.enabled;
-            sessionStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0');
-            try { localStorage.setItem('dms_server_execution_enabled', s.enabled ? '1' : '0'); } catch (_) {}
-            renderServerExecutionState();
-            ensureServerExecutionPolling();
-            log(`☁ Execution engine: ${s.enabled ? 'SERVER' : 'BROWSER'}`, 'SYSTEM');
+            // Server execution was removed from this browser-only edition.
+            if (window.SERVER_EXECUTION) window.SERVER_EXECUTION.enabled = false;
+            return false;
         }
 
         function getConfiguredMinimumV1Margin() {
@@ -14709,8 +14684,8 @@ pollServerExecutionState();
                     return;
                 }
             } else if (!token) {
-                log('❌ Legacy browser mode requires a Deriv token. Use SERVER mode.', 'CRITICAL');
-                updateTradeStatus('ERROR', 'Browser token unavailable', 'Use SERVER mode', 'loss');
+                log('❌ Browser trading requires a Deriv trading token. Reconnect your account.', 'CRITICAL');
+                updateTradeStatus('ERROR', 'Browser token unavailable', 'Reconnect your Deriv trading account', 'loss');
                 return;
             }
             
@@ -14953,114 +14928,27 @@ window.isBotRunning = true;
             sessionDisplay.classList.add('hidden');
         }
         
+        // Browser-only START/STOP: never call legacy /sessions/* routes.
+        // A separate Deriv trading websocket handles browser purchases.
         async function toggleBot() {
-            const serverMode = window.SERVER_EXECUTION?.enabled === true;
-
+            if (window.SERVER_EXECUTION) {
+                window.SERVER_EXECUTION.enabled = false;
+                window.SERVER_EXECUTION.startPending = false;
+                if (window.SERVER_EXECUTION.pollTimer) {
+                    clearInterval(window.SERVER_EXECUTION.pollTimer);
+                    window.SERVER_EXECUTION.pollTimer = null;
+                }
+            }
             if (window.isBotRunning) {
-                if (window.SERVER_EXECUTION) {
-                    window.SERVER_EXECUTION.startPending = false;
-                }
                 window.__dmsManualStopRequested = true;
-
-                if (window.SERVER_EXECUTION?.continuousRestartTimer) {
-                    clearTimeout(window.SERVER_EXECUTION.continuousRestartTimer);
-                    window.SERVER_EXECUTION.continuousRestartTimer = null;
-                }
-
-                if (window.SERVER_EXECUTION) {
-                    window.SERVER_EXECUTION.continuousRestartPending = false;
-                    window.SERVER_EXECUTION.continuousRestartAttempts = 0;
-                }
                 if (typeof window.__dmsDisableOvernightState === 'function') {
                     try { window.__dmsDisableOvernightState('Manual STOP'); } catch (_) {}
                 }
-
-                if (serverMode) {
-                    try {
-                        await stopServerExecutionSession();
-                    } catch (e) {
-                        alert(`Server STOP failed: ${e.message}`);
-                        return;
-                    }
-                }
-
                 stopBot('Manual STOP');
                 return;
             }
-
             window.__dmsManualStopRequested = false;
-
-            if (!serverMode) {
-                startBot();
-                return;
-            }
-
-            // Mark START pending BEFORE startBot() updates the button. The old
-            // completed server state must not overwrite this new user action.
-            window.SERVER_EXECUTION.startPending = true;
-
-            log('🚀 START BOT clicked · preparing SERVER session', 'SYSTEM');
             startBot();
-
-            // startBot() can still reject a genuine local prerequisite such as
-            // a missing platform session. In that case release the handshake.
-            if (!window.isBotRunning) {
-                window.SERVER_EXECUTION.startPending = false;
-                try { updateButtonState(); } catch (_) {}
-                log('❌ START aborted before server request', 'ERROR');
-                return;
-            }
-
-            try {
-                log('☁ Sending START to server worker…', 'SYSTEM');
-                await startServerExecutionSession();
-
-                window.SERVER_EXECUTION.startPending = false;
-
-                // Pull the new backend state immediately. A successful fresh
-                // cycle must now show Trade 0/1 progression, not the old
-                // completed Trade 13 snapshot.
-                await pollServerExecutionState();
-                try { updateButtonState(); } catch (_) {}
-
-                const startedMode = String(
-                    window.SERVER_EXECUTION?.state?.account_mode ||
-                    sessionStorage.getItem('selectedAccountMode') ||
-                    localStorage.getItem('selectedAccountMode') ||
-                    'DEMO'
-                ).toUpperCase();
-
-                log(
-                    startedMode === 'REAL'
-                        ? '✅ REAL START accepted · server executing the selected account'
-                        : '✅ Server START accepted',
-                    'SYSTEM'
-                );
-
-                if (startedMode === 'REAL') {
-                    updateTradeStatus(
-                        'REAL STRATEGY ACTIVE',
-                        'Server is scoring V1 and enforcing the margin gate',
-                        'Eligible trades execute automatically · press STOP BOT to halt new purchases',
-                        'trade'
-                    );
-                } else {
-                    updateTradeStatus(
-                        'SERVER ACTIVE',
-                        'Server worker owns execution',
-                        'Dashboard may be closed; worker continues',
-                        'trade'
-                    );
-                }
-            } catch (e) {
-                if (window.SERVER_EXECUTION) {
-                    window.SERVER_EXECUTION.startPending = false;
-                }
-                try { updateButtonState(); } catch (_) {}
-                log(`❌ Server START failed: ${e.message}`, 'ERROR');
-                stopBot('Server start failed');
-                alert(`Server START failed: ${e.message}`);
-            }
         }
 
         // V2.5: explicitly expose the core controls. The overnight controller
