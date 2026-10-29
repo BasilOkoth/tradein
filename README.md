@@ -1,17 +1,32 @@
-# TradeIn V2.3 — Deriv contract_id wire-format repair
+# TradeIn strict V1 #1 at each BUY
 
-## Confirmed root cause
-`/execution-v2/health` showed `InputValidationFailed: Input validation failed: contract_id` for contract 18616106419.
-`app/deriv_ws.py` sends `contract_id` as a string in both `contract_status` and `subscribe_contract`.
-The installed controller V2.3 now wraps `DerivWS.request` and converts `contract_id` into a **positive integer** whenever it sends a `proposal_open_contract` request. The original database IDs remain unchanged.
+Complete NEW integration module `app/rank1_main.py` and full `render.yaml`.
+This module imports your V2.3 `app.execution_v2:app` and installs a guard
+on the existing engine. It does not replace `app/engine.py`.
+
+**Important:** This package **includes the V2.3 `app/execution_v2.py` controller** that
+contains the previous contract ID type fix. The new startup imports it
+so its settlement reconciliation and tick permits are retained.
+
+The guard picks the latest canonical V1 rank #1 immediately before handing
+the order to the existing buy routine. It invalidates stale prearmed proposals,
+requests fresh proposals matching the ranked digit, and rechecks ranking after
+network waits. If the rank keeps changing, it declines that purchase; it does
+not change a purchased contract.
+
+**Limitations:** There is still an asynchronous window inside the original
+`_execute_buy` between the guard and the Deriv `buy()` call, so tick-perfect
+synchronization cannot be guaranteed without editing the original engine's
+actual `buy()` call. The guard enforces target consistency at its entry
+boundary, not atomically with a remote Deriv purchase.
+
+**Do not switch this on for live funds without DEMO validation.**
 
 ## Install
-Replace `app/execution_v2.py` and retain `render.yaml` with `uvicorn app.execution_v2:app` as configured. `bot.html` is included as the matching complete dashboard version; replacing it is not necessary for this specific fix.
-
-1. Stop the bot and use a separate **DEMO** deployment (`ALLOW_REAL_MODE=false`).
-2. Deploy, and confirm `/execution-v2/health` reports `settlement-authoritative-v2.3` and `contract_id_fix_installed: true`.
-3. `contract_checks.session-1.state` should change from `CHECK_FAILED` to `SOLD` or `OPEN` if Deriv permits the query. Other API issues can still occur.
-4. If the contract is `SOLD`, the existing reconciliation handler should attempt to clear `open_contract_id`. Inspect logs/DB to verify; do not manually clear it without authoritative evidence.
-5. Confirm next eligible tick generates exactly one purchase only after settlement and account-mode checks; never force REAL purchases.
-
-No authenticated connection or live trading tests were performed. Python syntax is validated. This package does not guarantee every physical tick results in a purchase.
+1. Upload both `app/rank1_main.py` and `app/execution_v2.py`, and replace root `render.yaml`.
+2. Deploy to an isolated DEMO instance. Ensure the Render start command
+   matches `uvicorn app.rank1_main:app --host 0.0.0.0 --port $PORT`.
+3. Visit `/execution/rank1-health` and verify `rank1_guard_installed: true`.
+4. Review `RANK1_REPRICE` and `RANK1_BUY_VERIFIED` in Render logs; correlate
+   actual target digits against canonical rankings at purchase time.
+5. Confirm STOP, settlements and no duplicate buys during 20-trade tests.
