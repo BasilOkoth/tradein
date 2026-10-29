@@ -1,18 +1,17 @@
-# TradeIn live-stream and reconciliation integration fix
+# TradeIn V2.3 — Deriv contract_id wire-format repair
 
-Full replacement files (not patches): `bot.html`, `app/execution_v2.py`, `render.yaml`.
+## Confirmed root cause
+`/execution-v2/health` showed `InputValidationFailed: Input validation failed: contract_id` for contract 18616106419.
+`app/deriv_ws.py` sends `contract_id` as a string in both `contract_status` and `subscribe_contract`.
+The installed controller V2.3 now wraps `DerivWS.request` and converts `contract_id` into a **positive integer** whenever it sends a `proposal_open_contract` request. The original database IDs remain unchanged.
 
-## Main changes
-- A public tick received by the browser updates Current Tick, Digit, and Ticks/sec even when the secure backend worker is running. This path is strictly display-only; it NEVER submits a Deriv order, changes trading decisions, or calls handleTick.
-- The backend v2.1 checks tick subscription freshness starting from the moment a subscription is created. Previously the watchdog did not consider a subscription stale until at least one tick arrived, so a stream with *zero first ticks* could remain indefinitely silent.
-- No contract is marked lost from a timeout. The open Deriv contract remains under authoritative reconciliation until a verified sold response is obtained.
+## Install
+Replace `app/execution_v2.py` and retain `render.yaml` with `uvicorn app.execution_v2:app` as configured. `bot.html` is included as the matching complete dashboard version; replacing it is not necessary for this specific fix.
 
-## Installation
-1. Upload `bot.html` to the root of the `tradein` repository.
-2. Upload `app/execution_v2.py` to `app/` (replace the previous version).
-3. Replace `render.yaml`, including its start command pointing to `app.execution_v2:app`.
-4. Deploy a separate DEMO instance first; preserve the original database and existing contracts.
-5. Visit `/execution-v2/health`, confirm Render startup logs and confirm live browser tick displays update. Do not press START until the previously unresolved contract has a verified settled status.
+1. Stop the bot and use a separate **DEMO** deployment (`ALLOW_REAL_MODE=false`).
+2. Deploy, and confirm `/execution-v2/health` reports `settlement-authoritative-v2.3` and `contract_id_fix_installed: true`.
+3. `contract_checks.session-1.state` should change from `CHECK_FAILED` to `SOLD` or `OPEN` if Deriv permits the query. Other API issues can still occur.
+4. If the contract is `SOLD`, the existing reconciliation handler should attempt to clear `open_contract_id`. Inspect logs/DB to verify; do not manually clear it without authoritative evidence.
+5. Confirm next eligible tick generates exactly one purchase only after settlement and account-mode checks; never force REAL purchases.
 
-## Limits
-This package was Python syntax-checked and its inline JavaScript was parsed by Node. Not live-tested on Deriv or Render. An unresolved contract still blocks a safe subsequent purchase; this is deliberate. A public UI tick does not establish that the authenticated backend received the same tick.
+No authenticated connection or live trading tests were performed. Python syntax is validated. This package does not guarantee every physical tick results in a purchase.

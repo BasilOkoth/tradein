@@ -1,4 +1,4 @@
-"""TradeIn v2.2 execution controller for the existing tradein repository.
+"""TradeIn v2.3 execution controller for the existing tradein repository.
 
 Deploy as uvicorn app.execution_v2:app instead of app.top4_main:app.
 Existing app.engine is retained for OAuth, order validation and DB claims.
@@ -12,6 +12,7 @@ from datetime import datetime
 
 from .top4_main import app
 from .engine import engine
+from .deriv_ws import DerivWS
 from .db import SessionLocal
 from .models import TradingSession
 
@@ -31,7 +32,39 @@ last_tick_epoch = {}
 tick_permits = set()
 watchdog_task = None
 installed = False
+contract_id_patch_installed = False
 check_sem = asyncio.Semaphore(MAX_CHECKS)
+
+
+
+def install_contract_id_wire_fix():
+    """Send numeric Deriv contract IDs in BOTH status and subscription requests.
+
+    Previous DerivWS.contract_status and subscribe_contract passed str(id),
+    which Deriv rejects as InputValidationFailed: contract_id.
+    Keep local DB/TradeLog IDs as strings; only alter the API payload type.
+    """
+    global contract_id_patch_installed
+    if contract_id_patch_installed:
+        return
+    original_request = DerivWS.request
+
+    async def corrected_request(self, payload, *args, **kwargs):
+        if isinstance(payload, dict) and payload.get("proposal_open_contract") and "contract_id" in payload:
+            wire = dict(payload)
+            try:
+                cid = int(str(wire["contract_id"]).strip())
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError("Invalid Deriv contract ID; expected positive integer") from exc
+            if cid <= 0:
+                raise RuntimeError("Invalid Deriv contract ID; expected positive integer")
+            wire["contract_id"] = cid
+            payload = wire
+        return await original_request(self, payload, *args, **kwargs)
+
+    DerivWS.request = corrected_request
+    contract_id_patch_installed = True
+    log.info("DMS_V23_CONTRACT_ID_WIRE_FIX_ENABLED")
 
 
 def notify(sid):
@@ -271,6 +304,7 @@ async def monitor():
 @app.on_event("startup")
 async def v2_start():
     global watchdog_task
+    install_contract_id_wire_fix()
     install()
     if not watchdog_task or watchdog_task.done():
         watchdog_task = asyncio.create_task(monitor())
@@ -292,8 +326,10 @@ async def v2_stop():
 async def v2_health():
     now = time.monotonic()
     return {
-        "controller": "settlement-authoritative-v2.2",
+        "controller": "settlement-authoritative-v2.3",
         "watchdog_running": bool(watchdog_task and not watchdog_task.done()),
+        "contract_id_wire_type": "integer",
+        "contract_id_fix_installed": contract_id_patch_installed,
         "outstanding_checks": len(active_checks),
         "stream_subscriptions": len(engine.tick_subscriptions),
         "last_tick_age_seconds": {
