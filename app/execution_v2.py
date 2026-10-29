@@ -1,4 +1,4 @@
-"""TradeIn v2.1 execution controller for the existing tradein repository.
+"""TradeIn v2.2 execution controller for the existing tradein repository.
 
 Deploy as uvicorn app.execution_v2:app instead of app.top4_main:app.
 Existing app.engine is retained for OAuth, order validation and DB claims.
@@ -24,6 +24,7 @@ STREAM_TIMEOUT = 12.0
 active_checks = set()
 check_at = defaultdict(float)
 stream_at = {}
+contract_diagnostics = {}
 subscribed_at = {}
 recovery_tasks = {}
 last_tick_epoch = {}
@@ -177,6 +178,11 @@ async def verify(sid, user_id, account_id, contract_id):
                 client.contract_status(str(contract_id)), STATUS_TIMEOUT
             )
             poc = result.get("proposal_open_contract") or {}
+            contract_diagnostics[key] = {
+                "state": "SOLD" if poc.get("is_sold") else "OPEN",
+                "last_check_monotonic": time.monotonic(),
+                "error": None,
+            }
             if poc.get("is_sold"):
                 await engine._handle_contract_update(
                     sid=sid, user_id=user_id, account_id=account_id,
@@ -185,6 +191,11 @@ async def verify(sid, user_id, account_id, contract_id):
     except asyncio.CancelledError:
         raise
     except Exception as error:
+        contract_diagnostics[key] = {
+            "state": "CHECK_FAILED",
+            "last_check_monotonic": time.monotonic(),
+            "error": f"{type(error).__name__}: {error}"[:220],
+        }
         log.warning("DMS_V2_CONTRACT_QUERY_FAILED sid=%s cid=%s error=%s",
                     sid, contract_id, error)
     finally:
@@ -195,12 +206,13 @@ async def monitor():
     while True:
         db = SessionLocal()
         try:
+            # An unresolved contract must remain under observation EVEN if
+            # a prior error or STOP has set running=False.
             rows = [
                 (int(s.id), str(s.user_id), str(s.account_id), str(s.symbol),
-                 str(s.open_contract_id or ""))
-                for s in db.query(TradingSession).filter(
-                    TradingSession.running == True
-                ).all()
+                 str(s.open_contract_id or ""), bool(s.running))
+                for s in db.query(TradingSession).all()
+                if s.running or s.open_contract_id
             ]
         except Exception:
             log.exception("DMS_V2_MONITOR_DB_FAILED")
@@ -208,10 +220,22 @@ async def monitor():
         finally:
             db.close()
         now = time.monotonic()
-        for sid, uid, aid, symbol, contract in rows:
+        for sid, uid, aid, symbol, contract, running in rows:
             if contract and now - check_at[(sid, contract)] >= CHECK_EVERY:
                 check_at[(sid, contract)] = now
                 asyncio.create_task(verify(sid, uid, aid, contract))
+            # Do not restart trading or streams on a stopped session just to
+            # reconcile an already-purchased contract.
+            if not running:
+                continue
+            # A dead authenticated WS does not make cached subscription ids valid.
+            cached_client = engine.clients.get((uid, aid))
+            if cached_client is not None and not cached_client.is_open():
+                engine.tick_subscriptions.pop(sid, None)
+                try:
+                    await engine._drop_client(uid, aid)
+                except Exception as error:
+                    log.warning("DMS_V2_SOCKET_RESET_FAILED sid=%s error=%s", sid, error)
             # Subscriptions must start even though the polling worker no
             # longer receives purchase permits by itself.
             if sid not in engine.tick_subscriptions:
@@ -266,9 +290,21 @@ async def v2_stop():
 
 @app.get("/execution-v2/health")
 async def v2_health():
+    now = time.monotonic()
     return {
-        "controller": "settlement-authoritative-v2",
+        "controller": "settlement-authoritative-v2.2",
         "watchdog_running": bool(watchdog_task and not watchdog_task.done()),
         "outstanding_checks": len(active_checks),
         "stream_subscriptions": len(engine.tick_subscriptions),
+        "last_tick_age_seconds": {
+            str(k): round(now-v, 1) for k, v in stream_at.items()
+        },
+        "contract_checks": {
+            f"session-{key[0]}": {
+                "state": val.get("state"),
+                "last_check_age_seconds": round(now-val["last_check_monotonic"],1),
+                "error": val.get("error"),
+            }
+            for key, val in contract_diagnostics.items()
+        },
     }
