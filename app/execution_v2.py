@@ -1,4 +1,4 @@
-"""TradeIn v2.3 execution controller for the existing tradein repository.
+"""TradeIn v2.4 execution controller for the existing tradein repository.
 
 Deploy as uvicorn app.execution_v2:app instead of app.top4_main:app.
 Existing app.engine is retained for OAuth, order validation and DB claims.
@@ -33,6 +33,8 @@ tick_permits = set()
 watchdog_task = None
 installed = False
 contract_id_patch_installed = False
+local_tick_results = {} # sid -> provisional tick, contract and locked target
+local_match_holds = set() # sid blocked by a local MATCH awaiting Deriv
 check_sem = asyncio.Semaphore(MAX_CHECKS)
 
 
@@ -120,13 +122,43 @@ def install():
             snapshot = engine._score_all_digits(sid)
             if snapshot.get("ready"):
                 engine._set_live_next_target(sid, snapshot.get("selected_digit"))
+        # Zero-network local comparator: compare ONLY the first eligible
+        # post-purchase tick against the paid contract's immutable barrier.
+        # This event is PROVISIONAL. It never books a WIN or advances losses.
+        active = engine.fast_contracts.get(sid)
+        if active and not active.get("decided") and active.get("symbol") == str(symbol):
+            armed_epoch = int(active.get("armed_after_epoch") or 0)
+            observed = engine._tick_last_digit(tick)
+            if observed is not None and epoch > armed_epoch and epoch > 0:
+                active["decided"] = True
+                active["decision_epoch"] = epoch
+                active["observed_digit"] = int(observed)
+                active["fast_result"] = "WIN" if int(observed) == int(active["target_digit"]) else "LOSS"
+                cid = str(active["contract_id"])
+                match = int(observed) == int(active["target_digit"])
+                local_tick_results[sid] = {
+                    "contract_id": cid, "trade_no": int(active.get("trade_no") or 0),
+                    "locked_digit": int(active["target_digit"]),
+                    "observed_digit": int(observed), "decision_epoch": epoch,
+                    "decision": "LOCAL_MATCH_WAITING_DERIV" if match else "LOCAL_MISS_PREPARING",
+                    "observed_at_monotonic": time.monotonic(),
+                }
+                if match:
+                    local_match_holds.add(sid)
+                    # Do not write a paid WIN to DB or resume; settlement owns it.
+                    log.info("DMS_LOCAL_MATCH_HOLD sid=%s cid=%s digit=%s tick=%s",
+                             sid, cid, observed, epoch)
+                else:
+                    # Prepare/read V1 ranking, while official outcome gates BUY.
+                    log.info("DMS_LOCAL_MISS_PREPARE sid=%s cid=%s target=%s seen=%s tick=%s",
+                             sid, cid, active["target_digit"], observed, epoch)
         # If eligible and idle, wake the same original guarded worker.
         # Actual purchase waits for an official previous settlement.
         db = SessionLocal()
         try:
             session = db.get(TradingSession, sid)
             if session and session.running and not session.paused and not session.open_contract_id:
-                if sid not in engine.fast_contracts:
+                if sid not in engine.fast_contracts and sid not in local_match_holds:
                     tick_permits.add(sid)
                     notify(sid)
         finally:
@@ -138,12 +170,29 @@ def install():
             return
         sid = int(sid)
         cid = str(contract_id)
+        # The local hold is provisional and remains in place until the
+        # authoritative sold update is processed. A local WIN can be wrong.
+        # Keep logging a mismatch for analysis, without assuming an official win.
+        provisional = local_tick_results.get(sid)
+        if provisional and str(provisional.get("contract_id")) == cid:
+            local_win = provisional.get("decision") == "LOCAL_MATCH_WAITING_DERIV"
+            official_win = float(poc.get("profit") or 0.0) > 0
+            if local_win != official_win:
+                log.warning("DMS_LOCAL_OFFICIAL_MISMATCH sid=%s cid=%s local_match=%s official_win=%s",
+                            sid, cid, local_win, official_win)
         # Existing handler owns Deriv P/L ledger, settled TradeLog and
         # reconciliation. It is idempotent against already SETTLED logs.
         await original_settlement(
             sid=sid, user_id=user_id, account_id=account_id,
             contract_id=cid, data=data,
         )
+        # Only the Deriv SOLD event releases a provisional local-match hold.
+        if local_tick_results.get(sid, {}).get("contract_id") == cid:
+            local_match_holds.discard(sid)
+            local_tick_results[sid]["decision"] = "DERIV_SETTLED"
+            local_tick_results[sid]["official_result"] = (
+                "WIN" if float(poc.get("profit") or 0) > 0 else "LOSS"
+            )
         db = SessionLocal()
         try:
             session = db.get(TradingSession, sid)
@@ -326,7 +375,10 @@ async def v2_stop():
 async def v2_health():
     now = time.monotonic()
     return {
-        "controller": "settlement-authoritative-v2.3",
+        "controller": "settlement-authoritative-v2.4-local-tick",
+        "local_comparator_installed": True,
+        "local_match_holds": sorted(local_match_holds),
+        "local_tick_results": {str(k): v for k, v in local_tick_results.items()},
         "watchdog_running": bool(watchdog_task and not watchdog_task.done()),
         "contract_id_wire_type": "integer",
         "contract_id_fix_installed": contract_id_patch_installed,
