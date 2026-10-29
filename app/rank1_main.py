@@ -34,19 +34,24 @@ def install_rank1_buy_guard():
         # Once a valid score is obtained, the proposal's digit must match.
         candidate = dict(payload)
         for attempt in range(_MAX_RESCORES):
-            digit, snapshot = engine._choose_scored_digit(sid, lock_target=False)
+            # This is the SAME V1 ranking array that populates DIGIT RANKING 0-9.
+            # Never source the purchase digit from manual Current Digit, AI,
+            # shadow/fusion prediction, or an earlier locked target.
+            snapshot = engine._score_all_digits(sid)
+            ranking = snapshot.get("ranking") or []
+            digit = int(ranking[0]["digit"]) if ranking else None
             if digit is None or not snapshot.get("ready"):
                 s.phase = "RANK1_WARMING"
                 s.updated_at = datetime.utcnow()
                 db.commit()
                 logger.info("RANK1_WARMING sid=%s", sid)
                 return False
-            ranked = snapshot.get("ranking") or snapshot.get("ranked_digits")
-            if ranked and isinstance(ranked[0], dict):
-                top = ranked[0].get("digit")
-                if top is not None and int(top) != int(digit):
-                    logger.error("RANK1_SCORER_INCONSISTENCY sid=%s", sid)
-                    return False
+            # ranking[0] is authoritative for this application's V1 target.
+            # The scorer's selected_digit should agree; fail closed otherwise.
+            selected = snapshot.get("selected_digit")
+            if selected is None or int(selected) != int(digit):
+                logger.error("RANK1_SCORER_INCONSISTENCY sid=%s", sid)
+                return False
             digit = int(digit)
             if int(candidate.get("digit", -1)) != digit:
                 # Old prearmed proposal is unsuitable. The active purchased
@@ -66,11 +71,19 @@ def install_rank1_buy_guard():
 
             # Take a final snapshot immediately before entering the legacy
             # purchase method. This is the latest processed canonical tick.
-            latest, latest_snapshot = engine._choose_scored_digit(sid, lock_target=True)
-            if latest is None or not latest_snapshot.get("ready"):
+            latest_snapshot = engine._score_all_digits(sid)
+            latest_rows = latest_snapshot.get("ranking") or []
+            if not latest_snapshot.get("ready") or not latest_rows:
                 return False
-            if int(latest) != int(candidate["digit"]):
+            latest = int(latest_rows[0]["digit"])
+            if latest != int(candidate["digit"]):
                 continue
+            # Freeze evidence of the exact ranking that authorized this BUY.
+            engine.locked_target_snapshots[sid] = {
+                "digit": latest,
+                "snapshot": latest_snapshot,
+                "locked_at": datetime.utcnow().isoformat(),
+            }
 
             s.candidate_digit = int(latest)
             s.phase = "RANK1_VERIFIED"
@@ -101,6 +114,6 @@ def rank1_health():
     return {
         "rank1_guard_installed": _INSTALLED,
         "max_rescore_attempts": _MAX_RESCORES,
-        "enforcement": "verify latest canonical V1 #1 before entering buy method",
+        "enforcement": "purchase digit == DIGIT RANKING 0-9 ranking[0].digit from canonical V1 scorer",
         "scope": "active-contract digits unchanged; no guarantee of tick-perfect buys",
     }
