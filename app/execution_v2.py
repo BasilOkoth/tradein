@@ -1,4 +1,4 @@
-"""TradeIn v2 execution controller for the existing tradein repository.
+"""TradeIn v2.1 execution controller for the existing tradein repository.
 
 Deploy as uvicorn app.execution_v2:app instead of app.top4_main:app.
 Existing app.engine is retained for OAuth, order validation and DB claims.
@@ -24,6 +24,7 @@ STREAM_TIMEOUT = 12.0
 active_checks = set()
 check_at = defaultdict(float)
 stream_at = {}
+subscribed_at = {}
 recovery_tasks = {}
 last_tick_epoch = {}
 tick_permits = set()
@@ -220,10 +221,11 @@ async def monitor():
                         sid=sid, user_id=uid, account_id=aid,
                         symbol=symbol, client=client,
                     )
+                    subscribed_at[sid] = time.monotonic()
                 except Exception as error:
                     log.warning("DMS_V2_SUBSCRIBE_FAILED sid=%s error=%s", sid, error)
             sub = engine.tick_subscriptions.get(sid)
-            if sub and sid in stream_at and now - stream_at[sid] > STREAM_TIMEOUT:
+            if sub and now - stream_at.get(sid, subscribed_at.get(sid, now)) > STREAM_TIMEOUT:
                 # Remove stale handle and use the engine's own subscription API.
                 engine.tick_subscriptions.pop(sid, None)
                 try:
@@ -235,7 +237,7 @@ async def monitor():
                         sid=sid, user_id=uid, account_id=aid,
                         symbol=symbol, client=client,
                     )
-                    stream_at[sid] = time.monotonic()
+                    subscribed_at[sid] = time.monotonic()
                     log.warning("DMS_V2_STREAM_REJOIN sid=%s", sid)
                 except Exception as error:
                     log.warning("DMS_V2_STREAM_REJOIN_FAILED sid=%s err=%s", sid, error)

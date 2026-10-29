@@ -9393,6 +9393,26 @@ function rotateHybridDigit(reason = '') {
                         (serverState.running || serverState.open_contract_id || Number(serverState.current_trade || 0) > 0)
                     );
                     if (serverWorkerActive) {
+                        // Server owns all paid trade decisions. Public prices are
+                        // display-only and must never invoke handleTick()/buy().
+                        const chosen = document.getElementById('symbol')?.value;
+                        const market = data.tick.symbol || data.echo_req?.ticks || chosen;
+                        if (chosen && market && String(chosen) !== String(market)) return;
+                        const formatted = canonicalTickString(data.tick.quote, data.tick, market);
+                        const last = formatted ? Number.parseInt(formatted.slice(-1), 10) : NaN;
+                        if (!formatted || !Number.isInteger(last)) return;
+                        const receivedAt = Date.now();
+                        window.dmsPublicUiTickAt = receivedAt;
+                        window.dmsPublicUiTickEpoch = Number(data.tick.epoch || 0);
+                        const live = document.getElementById('metricLiveTick');
+                        const digit = document.getElementById('metricLastDigit');
+                        const rate = document.getElementById('metricTickRate');
+                        if (live) live.textContent = formatted;
+                        if (digit) digit.textContent = `Digit: ${last}`;
+                        window.dmsPublicUiTickTimes = (window.dmsPublicUiTickTimes || [])
+                            .filter(t => t > receivedAt - 5000);
+                        window.dmsPublicUiTickTimes.push(receivedAt);
+                        if (rate) rate.textContent = `Ticks/sec: ${(window.dmsPublicUiTickTimes.length / 5).toFixed(1)}`;
                         return;
                     }
 
@@ -16609,5 +16629,17 @@ window.isBotRunning = true;
 </script>
 <!-- Read-only market frequency and 3-tick research; does not start trading -->
 <script defer src="dms-frequency-stream-v1.js"></script>
+<script id="dms-live-feed-health">
+(function () {
+  setInterval(function () {
+    if (!window.SERVER_EXECUTION?.enabled) return;
+    const ms = Date.now() - Number(window.dmsPublicUiTickAt || 0);
+    if (!window.dmsPublicUiTickAt || ms > 7000) {
+      const rate = document.getElementById('metricTickRate');
+      if (rate) rate.textContent = 'Ticks/sec: 0.0 · DISPLAY FEED STALE';
+    }
+  }, 2000);
+})();
+</script>
 </body>
 </html>

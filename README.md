@@ -1,31 +1,18 @@
-# TradeIn event-driven recovery package
+# TradeIn live-stream and reconciliation integration fix
 
-These are **complete files**, not patches. Add `app/fast_main.py`, and replace
-`render.yaml` with the provided full configuration. Existing `app/engine.py`,
-`app/main.py` and your browser UI remain unchanged.
+Full replacement files (not patches): `bot.html`, `app/execution_v2.py`, `render.yaml`.
 
-The Render start command becomes `uvicorn app.fast_main:app --host 0.0.0.0 --port $PORT`.
-`app.fast_main` imports the existing app, retains its OAuth and trading routes,
-and adds an independent official-contract settlement reconciliation watchdog.
+## Main changes
+- A public tick received by the browser updates Current Tick, Digit, and Ticks/sec even when the secure backend worker is running. This path is strictly display-only; it NEVER submits a Deriv order, changes trading decisions, or calls handleTick.
+- The backend v2.1 checks tick subscription freshness starting from the moment a subscription is created. Previously the watchdog did not consider a subscription stale until at least one tick arrived, so a stream with *zero first ticks* could remain indefinitely silent.
+- No contract is marked lost from a timeout. The open Deriv contract remains under authoritative reconciliation until a verified sold response is obtained.
 
-The watchdog polls a still-open contract's authoritative Deriv status every
-1.5 seconds with bounded concurrency. If sold, it uses the existing settlement
-handler, then wakes the normal purchase worker. It never guesses losses or
-submits its own BUY. Stale market-stream subscriptions may be renewed.
+## Installation
+1. Upload `bot.html` to the root of the `tradein` repository.
+2. Upload `app/execution_v2.py` to `app/` (replace the previous version).
+3. Replace `render.yaml`, including its start command pointing to `app.execution_v2:app`.
+4. Deploy a separate DEMO instance first; preserve the original database and existing contracts.
+5. Visit `/execution-v2/health`, confirm Render startup logs and confirm live browser tick displays update. Do not press START until the previously unresolved contract has a verified settled status.
 
-**Important**: this does not make it possible to purchase on every physical tick.
-The existing engine controls active contracts and requires its original purchase
-claims; Deriv's acceptance/settlement can lag behind the market feed.
-
-This is a targeted backend recovery addition, not a full rewrite of
-`app/engine.py`. The original purchase path and optional prefetch are unchanged.
-
-### Test in DEMO
-1. Use a separate branch and a non-production deployment.
-2. Keep `ALLOW_REAL_MODE=false` until validated.
-3. Confirm /health and /execution/watchdog respond successfully.
-4. Watch logs for DMS_WATCHDOG_SETTLED, DMS_WATCHDOG_CHECK_FAILED,
-   DMS_WATCHDOG_STREAM_RESUBSCRIBED and for actual contract IDs.
-5. Check that no duplicate buys or post-win purchases occur.
-
-No live Deriv session or deployment was tested here.
+## Limits
+This package was Python syntax-checked and its inline JavaScript was parsed by Node. Not live-tested on Deriv or Render. An unresolved contract still blocks a safe subsequent purchase; this is deliberate. A public UI tick does not establish that the authenticated backend received the same tick.
