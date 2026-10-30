@@ -1,28 +1,10 @@
-TRADEIN TOP-4 SELF-REFRESH V25
+TradeIn optional V1 threshold patch - unvalidated prototype
 
-Fixes Start Top-4 remaining disabled until manual browser refresh.
+1. Download repository ZIP at https://github.com/BasilOkoth/tradein and extract it.
+2. Copy apply_v1_gate.py and v1_gate.py into the repository root (folder with bot.html).
+3. Run `py apply_v1_gate.py` from that folder.
+4. The patch creates timestamped backups of every changed file.
+5. Inspect changes and run tests (`py test_v1_gate.py` if copied), then test in a staging DEMO deployment before pushing or deploying production.
+6. Blank threshold preserves the existing trading behavior. 15 (or 11) activates gate: at most two purchase claims for each new crossing of the V1 score. Following two, score must fall below and reach threshold again. A cycle can finish after a win with fewer than 2 purchases.
 
-Root cause:
-- /top4/arm could return a fresh READY DigitScore.
-- The frontend did not copy that returned digit_score into SERVER_EXECUTION.state.
-- Start Top-4 kept reading stale state until another full refresh/state cycle.
-
-V25:
-- arm response is applied immediately to live browser state.
-- readiness is rendered immediately after arm.
-- server polling warms first, then renders button from fresh state.
-- capital/readiness caches are invalidated after a fresh arm.
-- a lightweight 500ms UI-only refresh re-evaluates the button without extra network calls.
-- Start Top-4 unlocks as soon as:
-    score.ready == true
-    ranking has >= 4 digits
-    capital is sufficient
-    no Top-4 execution is currently in flight
-
-No manual page refresh should be required.
-
-Replace:
-  /bot.html
-  /app/top4_basket.py
-  /app/top4_main.py
-  /app/deriv_ws.py
+IMPORTANT: GitHub connector did not grant write access. This ZIP does not change the repository or deployed bot. The new gate is not end-to-end verified on Deriv. It is a development patch and is NOT safe to deploy to real-money production without independent review. V1 ranking scores are not probabilities and do not guarantee profitable trades.
