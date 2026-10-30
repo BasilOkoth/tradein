@@ -772,6 +772,32 @@ class MultiUserEngine:
                     s.updated_at = datetime.utcnow()
                     db.commit()
 
+                # OPTIONAL V1 GATE. Blank threshold = exact legacy execution path.
+                if s.v1_gate_threshold is not None:
+                    from .v1_gate import transition
+                    snap = self._score_all_digits(s.id)
+                    rank = snap.get("ranking") or []
+                    # The first ranked digit is the V1 candidate (not the gap).
+                    score = float(rank[0]["score"]) if snap.get("ready") and rank else None
+                    state, count, allowed = transition(
+                        s.v1_gate_state or "WAIT_HIGH",
+                        int(s.v1_gate_trades or 0),
+                        score,
+                        float(s.v1_gate_threshold),
+                    )
+                    s.v1_gate_state = state
+                    s.v1_gate_trades = count
+                    if not allowed:
+                        s.phase = "V1_GATE_WAITING"
+                        s.updated_at = datetime.utcnow()
+                        db.commit()
+                        return
+                    if count == 0 and rank:
+                        s.candidate_digit = int(rank[0]["digit"])
+                        self._set_live_next_target(s.id, s.candidate_digit)
+                    s.updated_at = datetime.utcnow()
+                    db.commit()
+
                 if s.candidate_digit is None:
                     s.phase = "WAITING_CANDIDATE"
                     db.commit()
@@ -847,6 +873,11 @@ class MultiUserEngine:
             db.rollback()
             return None
 
+        if row.v1_gate_threshold is not None:
+            if row.v1_gate_state != "ACTIVE" or int(row.v1_gate_trades or 0) >= 2:
+                db.rollback()
+                return None
+
         pending = self._pending_json(row.pending_trade_json)
 
         if (
@@ -867,6 +898,10 @@ class MultiUserEngine:
             "instance_id": self.instance_id,
             "claimed_at": datetime.utcnow().isoformat(),
         })
+        if row.v1_gate_threshold is not None:
+            row.v1_gate_trades = int(row.v1_gate_trades or 0) + 1
+            if row.v1_gate_trades >= 2:
+                row.v1_gate_state = "WAIT_LOW"
         row.phase = f"BUY_CLAIMED_{trade_no}"
         row.updated_at = datetime.utcnow()
         db.commit()

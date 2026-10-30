@@ -49,6 +49,10 @@ class TradingSession(Base):
     multiplier = Column(Float, nullable=False, default=1.15)
     max_trades = Column(Integer, nullable=False, default=10)
     current_trade = Column(Integer, nullable=False, default=0)
+    # NULL means legacy continuous trading; positive values enable the V1 gate.
+    v1_gate_threshold = Column(Float, nullable=True)
+    v1_gate_state = Column(String(20), nullable=False, default="WAIT_HIGH")
+    v1_gate_trades = Column(Integer, nullable=False, default=0)
     current_stake = Column(Float, nullable=False, default=1.0)
     candidate_digit = Column(Integer, nullable=True)
     open_contract_id = Column(String(120), nullable=True)

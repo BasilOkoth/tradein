@@ -76,6 +76,7 @@ class SessionCreate(BaseModel):
     base_stake: float = 1.0
     multiplier: float = 1.15
     max_trades: int = 15
+    v1_gate_threshold: float | None = None
 
 
 class Candidate(BaseModel):
@@ -374,6 +375,8 @@ def create_session(
 
     if body.max_trades < 1:
         raise HTTPException(status_code=400, detail="max_trades must be >= 1")
+    if body.v1_gate_threshold is not None and not (0 < body.v1_gate_threshold <= 1000):
+        raise HTTPException(status_code=400, detail="v1_gate_threshold must be > 0 and <= 1000, or blank")
 
     db = SessionLocal()
 
@@ -458,6 +461,10 @@ def create_session(
         s.current_stake = float(body.base_stake)
         s.multiplier = float(body.multiplier)
         s.max_trades = int(body.max_trades)
+        s.v1_gate_threshold = (float(body.v1_gate_threshold)
+                               if body.v1_gate_threshold is not None else None)
+        s.v1_gate_state = "WAIT_HIGH"
+        s.v1_gate_trades = 0
 
         s.current_trade = 0
         s.pnl = 0.0
