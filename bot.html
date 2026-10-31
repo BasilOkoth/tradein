@@ -14510,6 +14510,21 @@ function toggleServerContinuousResearch() {
                 }
             }
 
+            // Real purchases require a deliberate click, not a typed phrase.
+            if (String(created.account_mode || '').toUpperCase() === 'REAL' &&
+                cfg.v1_gate_threshold !== null && cfg.v1_gate_threshold !== undefined) {
+                const approved = window.confirm(
+                    'Authorize REAL purchases?\n\n' +
+                    'Up to TWO rapid DIGITMATCH contracts may be purchased. ' +
+                    'Both can be open simultaneously and both stakes can be lost.\n\n' +
+                    'OK = authorize this batch; Cancel = do not trade.'
+                );
+                if (!approved) throw new Error('Real rapid-pair authorization cancelled');
+                await serverExecRequest(`/sessions/${s.sessionId}/rapid-pair/authorize-real`, {
+                    method: 'POST', body: {approved: true}
+                });
+            }
+
             // Idempotent backend START:
             // calling it on an already-started worker returns success rather
             // than "Session is already running".

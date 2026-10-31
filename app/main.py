@@ -572,6 +572,13 @@ def start(
                 "open_contract_id": s.open_contract_id,
             }
 
+        from .models import TradeLog
+        if db.query(TradeLog).filter(
+            TradeLog.trading_session_id == sid,
+            TradeLog.status.in_(["OPEN", "SUBMITTING", "UNCERTAIN"])
+        ).count():
+            raise HTTPException(status_code=409, detail="Outstanding rapid-pair contracts must be reconciled before starting")
+
         if s.candidate_digit is None:
             s.candidate_digit = 5
 
@@ -646,6 +653,46 @@ def stop(
             "open_contract_id": s.open_contract_id,
         }
 
+    finally:
+        db.close()
+
+
+class RapidPairRealAuthorization(BaseModel):
+    approved: bool = False
+
+
+@app.post("/sessions/{sid}/rapid-pair/authorize-real")
+def authorize_real_rapid_pair(sid: int, body: RapidPairRealAuthorization,
+                              user_id: str = Depends(current_user_id)):
+    """Authorize at most two real rapid-pair purchases for one threshold batch."""
+    from .config import settings
+    from .models import TradeLog
+    import json
+    from datetime import timedelta
+    if body.approved is not True:
+        raise HTTPException(status_code=400, detail="Real rapid-pair approval is required")
+    if not settings.allow_real_mode:
+        raise HTTPException(status_code=403, detail="REAL purchases disabled by server")
+    db = SessionLocal()
+    try:
+        s = owns_session(db, user_id, sid)
+        if str(s.account_mode).upper() != "REAL" or s.v1_gate_threshold is None:
+            raise HTTPException(status_code=400, detail="Real rapid-pair threshold session required")
+        if s.running or s.open_contract_id:
+            raise HTTPException(status_code=409, detail="Stop and reconcile previous session first")
+        unsettled = db.query(TradeLog).filter(
+            TradeLog.trading_session_id == sid,
+            TradeLog.status.in_(["OPEN", "SUBMITTING", "UNCERTAIN"])
+        ).count()
+        if unsettled:
+            raise HTTPException(status_code=409, detail="Outstanding or uncertain trades require reconciliation")
+        s.pending_trade_json = json.dumps({
+            "kind":"REAL_RAPID_PAIR_AUTH", "expires_at":(datetime.utcnow()+timedelta(minutes=5)).isoformat(),
+            "remaining":2, "threshold":float(s.v1_gate_threshold), "authorized_for_session":int(s.id)
+        })
+        s.updated_at = datetime.utcnow()
+        db.commit()
+        return {"ok":True,"authorized_purchases":2,"expires_in_seconds":300}
     finally:
         db.close()
 

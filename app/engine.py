@@ -733,6 +733,16 @@ class MultiUserEngine:
                     client=client,
                 )
 
+                # Optional threshold batches use a separate demo-only two-contract
+                # executor so the original single-open-contract recovery lane is
+                # never allowed to overwrite an unsettled contract.
+                if s.v1_gate_threshold is not None:
+                    if not hasattr(self, '_rapid_pair'):
+                        from .rapid_pair import RapidPair
+                        self._rapid_pair = RapidPair(self)
+                    await self._rapid_pair.try_batch(db, s, client)
+                    return
+
                 fast_owner = self.fast_contracts.get(sid)
                 if (
                     int(s.current_trade or 0) > 0

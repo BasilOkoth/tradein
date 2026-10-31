@@ -376,6 +376,16 @@ class DerivWS:
             }
         )
 
+    async def buy_real_confirmed(self, proposal_id: str, price: float, *, authorization: bool = False):
+        """Real purchase only after an explicit backend-managed batch authorization.
+
+        Keep the existing demo-only buy method and default real restriction unchanged.
+        """
+        from .config import settings
+        if not settings.allow_real_mode or authorization is not True:
+            raise RuntimeError("REAL purchase not authorized by server and user")
+        return await self.request({"buy": str(proposal_id), "price": float(price)})
+
     async def contract_status(self, contract_id: str):
         return await self.request(
             {
