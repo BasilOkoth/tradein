@@ -13374,6 +13374,22 @@ window.executionLock = true;
             try { syncServerTerminalLifecycle(st); } catch (_) {}
         }
 
+        function formatSecureApiError(data, status) {
+            const d = data?.detail ?? data?.error ?? data;
+            if (typeof d === 'string') return `HTTP ${status}: ${d}`;
+            if (d && typeof d === 'object') {
+                const message = d.message || d.reason || `Server request failed (${status})`;
+                const details = [
+                    d.reason && d.reason !== message ? d.reason : null,
+                    Number.isFinite(Number(d.remaining)) ? `Unresolved purchases: ${d.remaining}` : null,
+                    Array.isArray(d.log_ids) && d.log_ids.length ? `Log IDs: ${d.log_ids.join(', ')}` : null,
+                    d.detail ? (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)) : null
+                ].filter(Boolean);
+                return `HTTP ${status}: ${message}${details.length ? ' — ' + details.join(' | ') : ''}`;
+            }
+            return `Server request failed (${status})`;
+        }
+
         async function serverExecRequest(path, options = {}) {
             const s = window.SERVER_EXECUTION;
             if (!s.apiUrl) throw new Error('Server execution backend URL is not configured.');
@@ -13405,7 +13421,7 @@ window.executionLock = true;
                 throw new Error(
                     res.status === 404
                         ? `API route missing: ${options.method || 'GET'} ${s.apiUrl}${path} (404). Verify this deployment is running app.top4_main:app or app.main:app.`
-                        : (data?.detail || data?.error || `Server request failed (${res.status})`)
+                        : formatSecureApiError(data, res.status)
                 );
             }
             return data;
@@ -14998,7 +15014,7 @@ window.isBotRunning = true;
                 // Never silently downgrade to browser trading on a backend 404.
                 try { stopBot('Server START failed'); } catch (_) {}
                 updateTradeStatus('ERROR', 'Secure trading START failed',
-                    `${e.message} — verify deployed API URL and route`, 'loss');
+                    `${e.message}`, 'loss');
             } finally {
                 server.startPending = false;
                 updateButtonState();

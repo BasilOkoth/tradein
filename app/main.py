@@ -10,7 +10,9 @@ from pydantic import BaseModel
 
 from .config import settings
 from .db import SessionLocal
-from .models import TradingSession, DerivAccount
+from .models import TradingSession, DerivAccount, DerivCredential
+from .security import decrypt_token
+from .deriv_rest import get_accounts
 from .security import current_user_id
 from .oauth import router as oauth_router
 from .engine import engine
@@ -259,6 +261,80 @@ def owns_session(db, user_id, sid):
 
     return s
 
+
+
+@app.post("/accounts/refresh-balances")
+async def refresh_balances(user_id: str = Depends(current_user_id)):
+    """Refresh balances using the user's own OAuth credential; never fabricate one."""
+    db = SessionLocal()
+    try:
+        credential = db.query(DerivCredential).filter(DerivCredential.user_id == user_id).first()
+        if credential is None:
+            raise HTTPException(status_code=401, detail="Connect your Deriv account again to refresh balances")
+        token = decrypt_token(credential.encrypted_access_token)
+        try:
+            response = await get_accounts(token)
+        except Exception as exc:
+            # Do not leak tokens or internals; the user must reconnect if OAuth expired.
+            raise HTTPException(status_code=502, detail="Could not refresh balances from Deriv; reconnect your account if necessary") from exc
+        source = response.get("data", []) if isinstance(response, dict) else []
+        if isinstance(source, dict):
+            source = [source]
+        if not isinstance(source, list):
+            raise HTTPException(status_code=502, detail="Unexpected Deriv account response")
+        accounts = []
+        for item in source:
+            if not isinstance(item, dict) or not item.get("account_id"):
+                continue
+            record = db.query(DerivAccount).filter(
+                DerivAccount.user_id == user_id,
+                DerivAccount.account_id == str(item["account_id"])
+            ).first()
+            if record is None:
+                continue
+            if item.get("balance") is not None:
+                try:
+                    record.balance = float(item["balance"])
+                except (ValueError, TypeError):
+                    pass
+            record.currency = item.get("currency") or record.currency
+            record.updated_at = datetime.utcnow()
+            accounts.append({"account_id":record.account_id,
+                             "account_type":record.account_type,
+                             "currency":record.currency,
+                             "balance":record.balance,
+                             "status":record.status})
+        db.commit()
+        return {"ok":True,"accounts":accounts}
+    finally:
+        db.close()
+
+
+class AISignal(BaseModel):
+    digit: int
+    score: float | None = None
+    symbol: str | None = None
+    source_tick_epoch: float | None = None
+    source_tick_quote: str | None = None
+    source_tick_digit: int | None = None
+
+
+@app.post("/sessions/{sid}/ai-signal")
+def receive_ai_signal(sid: int, signal: AISignal, user_id: str = Depends(current_user_id)):
+    """Non-execution telemetry compatibility route.
+
+    The server-side digit scorer remains authoritative: browser-supplied predictions
+    must not alter live buy targets or threshold decisions.
+    """
+    db = SessionLocal()
+    try:
+        owns_session(db, user_id, sid)
+        if signal.digit < 0 or signal.digit > 9:
+            raise HTTPException(status_code=422, detail="digit must be 0..9")
+        return {"ok":True,"accepted":True,"execution_source":"server_scoring",
+                "ai_signal_used_for_trading":False}
+    finally:
+        db.close()
 
 def digit_score_for_session(session_id: int):
     scorer = getattr(engine, "_score_all_digits", None)
