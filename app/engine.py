@@ -811,10 +811,6 @@ class MultiUserEngine:
                         score,
                         float(s.v1_gate_threshold),
                     )
-                    if score is None or score < float(s.v1_gate_threshold):
-                        # A drop during a two-trade batch invalidates the
-                        # remaining permission until a new crossing.
-                        state, count, allowed = "WAIT_HIGH", 0, False
                     s.v1_gate_state = state
                     s.v1_gate_trades = count
                     if not allowed:
@@ -904,18 +900,30 @@ class MultiUserEngine:
             return None
 
         if row.v1_gate_threshold is not None:
-            # BUY BOUNDARY: never trust a previously qualified proposal or
-            # prefetch. Re-evaluate the current V1 rank #1 immediately before
-            # claiming any purchase (first trade OR recovery purchase).
+            # A threshold crossing authorizes a TWO-purchase batch.
+            # Only purchase #1 requires a current qualifying score. After
+            # purchase #1, the second purchase may proceed even if V1 changes.
+            # Stop/pause, trade-number and duplicate-BUY checks still apply.
             from .v1_gate import transition
             snap = self._score_all_digits(sid)
             ranked = snap.get("ranking") or []
             live_score = (float(ranked[0]["score"])
                           if snap.get("ready") and ranked else None)
             threshold = float(row.v1_gate_threshold)
-            if live_score is None or live_score < threshold:
-                row.v1_gate_state = "WAIT_HIGH"
-                row.v1_gate_trades = 0
+            # Only a NEW batch needs a threshold-qualified entry. The second
+            # purchase is the continuation of the already triggered batch.
+            is_continuation = (
+                row.v1_gate_state == "ACTIVE"
+                and int(row.v1_gate_trades or 0) == 1
+            )
+            if not is_continuation and (live_score is None or live_score < threshold):
+                if row.v1_gate_state == "WAIT_LOW":
+                    state, count, _ = transition(
+                        row.v1_gate_state, int(row.v1_gate_trades or 0),
+                        live_score, threshold,
+                    )
+                    row.v1_gate_state = state
+                    row.v1_gate_trades = count
                 row.phase = "V1_GATE_WAITING_FRESH_SCORE"
                 row.updated_at = datetime.utcnow()
                 db.commit()
@@ -931,8 +939,9 @@ class MultiUserEngine:
                 row.updated_at = datetime.utcnow()
                 db.commit()
                 return None
-            # A stale prefetch for an old rank can slip through otherwise.
-            if int(ranked[0]["digit"]) != digit:
+            # Check rank alignment only for the FIRST purchase. The second
+            # purchase follows the existing recovery target, which may change.
+            if not is_continuation and ranked and int(ranked[0]["digit"]) != digit:
                 row.phase = "V1_GATE_STALE_RANK"
                 row.updated_at = datetime.utcnow()
                 db.commit()
