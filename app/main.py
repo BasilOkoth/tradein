@@ -547,7 +547,7 @@ def candidate(
 
 
 @app.post("/sessions/{sid}/start")
-def start(
+async def start(
     sid: int,
     user_id: str = Depends(current_user_id),
 ):
@@ -577,7 +577,19 @@ def start(
             TradeLog.trading_session_id == sid,
             TradeLog.status.in_(["OPEN", "SUBMITTING", "UNCERTAIN"])
         ).count():
-            raise HTTPException(status_code=409, detail="Outstanding rapid-pair contracts must be reconciled before starting")
+            from .rapid_pair import RapidPair
+            pair = getattr(engine, '_rapid_pair', None) or RapidPair(engine)
+            engine._rapid_pair = pair
+            check = await pair.reconcile_outstanding(sid, s.user_id, s.account_id)
+            db.expire_all()
+            s = owns_session(db, user_id, sid)
+            if check['remaining']:
+                raise HTTPException(status_code=409, detail={
+                    'message': 'Cannot start: unresolved Deriv purchase record(s)',
+                    'remaining': check['remaining'],
+                    'reason': check.get('reason'),
+                    'log_ids': check.get('log_ids', []),
+                    'detail': check.get('detail')})
 
         if s.candidate_digit is None:
             s.candidate_digit = 5
@@ -662,7 +674,7 @@ class RapidPairRealAuthorization(BaseModel):
 
 
 @app.post("/sessions/{sid}/rapid-pair/authorize-real")
-def authorize_real_rapid_pair(sid: int, body: RapidPairRealAuthorization,
+async def authorize_real_rapid_pair(sid: int, body: RapidPairRealAuthorization,
                               user_id: str = Depends(current_user_id)):
     """Authorize at most two real rapid-pair purchases for one threshold batch."""
     from .config import settings
@@ -685,7 +697,18 @@ def authorize_real_rapid_pair(sid: int, body: RapidPairRealAuthorization,
             TradeLog.status.in_(["OPEN", "SUBMITTING", "UNCERTAIN"])
         ).count()
         if unsettled:
-            raise HTTPException(status_code=409, detail="Outstanding or uncertain trades require reconciliation")
+            from .rapid_pair import RapidPair
+            pair = getattr(engine, '_rapid_pair', None) or RapidPair(engine)
+            engine._rapid_pair = pair
+            check = await pair.reconcile_outstanding(sid, s.user_id, s.account_id)
+            db.expire_all()
+            s = owns_session(db, user_id, sid)
+            if check['remaining']:
+                raise HTTPException(status_code=409, detail={
+                    'message': 'Outstanding or uncertain trades require reconciliation',
+                    'remaining': check['remaining'],
+                    'reason': check.get('reason'), 'log_ids': check.get('log_ids', []),
+                    'detail': check.get('detail')})
         s.pending_trade_json = json.dumps({
             "kind":"REAL_RAPID_PAIR_AUTH", "expires_at":(datetime.utcnow()+timedelta(minutes=5)).isoformat(),
             "remaining":2, "threshold":float(s.v1_gate_threshold), "authorized_for_session":int(s.id)

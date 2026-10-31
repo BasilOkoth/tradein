@@ -17,6 +17,60 @@ class RapidPair:
         self.outstanding = {}
         self.tasks = {}
 
+    async def reconcile_outstanding(self, sid, user_id, account_id):
+        """Read Deriv's authoritative contract state for known OPEN contract IDs.
+
+        Never guess the outcome of a SUBMITTING/UNCERTAIN BUY. The server may
+        have sent it even when its response was lost. These require manual
+        transaction-history verification.
+        """
+        db = SessionLocal()
+        try:
+            records = (db.query(TradeLog)
+                .filter(TradeLog.trading_session_id == sid,
+                        TradeLog.status.in_(['OPEN','SUBMITTING','UNCERTAIN']))
+                .order_by(TradeLog.id).all())
+            if not records:
+                return {'resolved': 0, 'remaining': 0}
+            unknown = [x for x in records if x.status != 'OPEN' or not x.contract_id]
+            if unknown:
+                return {'resolved': 0, 'remaining': len(records),
+                        'reason': 'Purchase outcome unknown: verify Deriv transaction history manually',
+                        'log_ids': [x.id for x in unknown]}
+            client = await self.engine._client(user_id, account_id)
+            resolved = 0
+            for log in records:
+                try:
+                    response = await client.contract_status(str(log.contract_id))
+                    contract = response.get('proposal_open_contract') or {}
+                    if not contract.get('is_sold'):
+                        continue
+                    profit = contract.get('profit')
+                    if profit is None:
+                        continue
+                    profit = float(profit)
+                    log.status = str(contract.get('status') or 'SOLD').upper()
+                    log.profit = profit
+                    log.settled_at = datetime.utcnow()
+                    session = db.get(TradingSession, sid)
+                    if session:
+                        session.pnl = float(session.pnl or 0) + profit
+                        session.updated_at = datetime.utcnow()
+                    db.commit()  # commit each settlement for restart safety
+                    resolved += 1
+                except Exception as exc:
+                    db.rollback()
+                    return {'resolved': resolved, 'remaining': len(records)-resolved,
+                            'reason': 'Deriv contract status check failed; no purchases permitted',
+                            'detail': str(exc)}
+            remaining = (db.query(TradeLog).filter(
+                TradeLog.trading_session_id == sid,
+                TradeLog.status.in_(['OPEN','SUBMITTING','UNCERTAIN'])).count())
+            return {'resolved': resolved, 'remaining': remaining,
+                    'reason': 'Known contract(s) still open on Deriv' if remaining else None}
+        finally:
+            db.close()
+
     async def try_batch(self, db, session, client):
         sid = session.id
         if sid in self.inflight or self.outstanding.get(sid):
