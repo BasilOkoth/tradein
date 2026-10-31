@@ -204,8 +204,9 @@ class RapidPair:
             if mode == 'REAL' and len(purchased) == 2:
                 session.pending_trade_json = None
             if session.v1_gate_trades>=2:
-                session.v1_gate_state='WAIT_LOW'
-                self.engine.v1_gate_waiting_threshold[sid]=float(threshold)
+                session.v1_gate_state='WAIT_HIGH'
+                session.v1_gate_trades=0
+                self.engine.v1_gate_waiting_threshold.pop(sid, None)
                 self.engine.v1_gate_low_observed.discard(sid)
             if not session.running:
                 pass

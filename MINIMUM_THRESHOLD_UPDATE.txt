@@ -1,0 +1,15 @@
+V1 MINIMUM THRESHOLD - 2026-10-31
+
+V1 threshold is a MINIMUM, not an exact-match or upward-crossing trigger.
+Example: threshold 9 qualifies at scores 9.00, 9.5, 10.00 or 12.00.
+Initial score already above 9 qualifies without a dip below 9.
+Each fresh two-purchase batch must qualify at >= configured threshold.
+A second purchase in a started batch need not requalify; all settlement,
+open contract, account mode, stop-on-WIN and max-trade safeguards remain.
+
+After a fully purchased rapid pair, the next batch can trigger from a
+current qualifying score without WAIT_LOW state. Open/unresolved contracts
+prevent starting another pair until reconciled.
+
+Also includes the separately confirmed missing 'import json' fix in app/main.py.
+Test with DEMO account before enabling any real-money execution.

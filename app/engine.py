@@ -927,7 +927,7 @@ class MultiUserEngine:
             return None
 
         if row.v1_gate_threshold is not None:
-            # A threshold crossing authorizes a TWO-purchase batch.
+            # A score at or above the MINIMUM authorizes a TWO-purchase batch.
             # Only purchase #1 requires a current qualifying score. After
             # purchase #1, the second purchase may proceed even if V1 changes.
             # Stop/pause, trade-number and duplicate-BUY checks still apply.
@@ -969,7 +969,7 @@ class MultiUserEngine:
             if not allowed or state != "ACTIVE" or count >= 2:
                 row.v1_gate_state = state
                 row.v1_gate_trades = count
-                row.phase = "V1_GATE_WAITING_NEW_CROSSING"
+                row.phase = "V1_GATE_WAITING_MINIMUM_SCORE"
                 row.updated_at = datetime.utcnow()
                 db.commit()
                 return None
@@ -1006,8 +1006,9 @@ class MultiUserEngine:
         if row.v1_gate_threshold is not None:
             row.v1_gate_trades = int(row.v1_gate_trades or 0) + 1
             if row.v1_gate_trades >= 2:
-                row.v1_gate_state = "WAIT_LOW"
-                self.v1_gate_waiting_threshold[sid] = float(row.v1_gate_threshold)
+                row.v1_gate_state = "WAIT_HIGH"
+                row.v1_gate_trades = 0
+                self.v1_gate_waiting_threshold.pop(sid, None)
                 self.v1_gate_low_observed.discard(sid)
         row.phase = f"BUY_CLAIMED_{trade_no}"
         row.updated_at = datetime.utcnow()
