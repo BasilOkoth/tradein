@@ -1,0 +1,9 @@
+V1 SCORE THRESHOLD / LIVE CROSSING FIX
+
+- Blank V1 threshold continues using normal legacy trading.
+- A new two-trade batch becomes eligible when rank #1 V1 score >= user threshold (not equality-only).
+- The second purchase in an active batch does not need the threshold to remain high.
+- Following the second purchase, a score below the threshold must be observed before a new batch is eligible; the tick handler now records that low even while a contract is active. This avoids missed crossings caused by the purchase/settlement loop.
+- All usual STOP, pause, max-trades, authentication, risk, official settlement, and real-mode confirmation controls remain in force. Timing cannot be guaranteed because quotes, requests, and Deriv settlement require network round-trips.
+- Smoke tests: Python compilation; threshold comparison cases 11.99, 12, 12.01, 15 and 22 with a threshold of 12.
+- NOT tested: full Deriv API or real-money execution. Deploy on a separate DEMO instance first.

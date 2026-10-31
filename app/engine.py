@@ -62,6 +62,10 @@ class MultiUserEngine:
         # Unified 0-9 scoring + target recycling.
         self.digit_scorer = DigitScoreEngine(recycle_after=3, min_history=10, max_history=100)
         self.digit_history = {}          # sid -> deque(maxlen=100)
+        # Track below-threshold observations from canonical ticks even while
+        # a contract is active. The purchase loop must not miss re-arm edges.
+        self.v1_gate_waiting_threshold = {}  # sid -> threshold
+        self.v1_gate_low_observed = set()     # sid values with a post-batch low
         self.digit_score_snapshots = {}  # sid -> latest ranking
         self.locked_target_snapshots = {}  # sid -> execution snapshot frozen at block selection
         self.last_settlement_by_sid = {}  # sid -> latest authoritative Deriv settlement
@@ -465,6 +469,12 @@ class MultiUserEngine:
                         self._last_scored_epoch[sid] = int(epoch)
                     live_snapshot = self._score_all_digits(sid)
                     if live_snapshot.get("ready"):
+                        # Read-only tick observation; never submits orders.
+                        waiting_at = self.v1_gate_waiting_threshold.get(sid)
+                        rows = live_snapshot.get("ranking") or []
+                        if (waiting_at is not None and rows
+                                and float(rows[0]["score"]) < waiting_at):
+                            self.v1_gate_low_observed.add(sid)
                         self._set_live_next_target(
                             sid,
                             live_snapshot.get("selected_digit"),
@@ -801,6 +811,13 @@ class MultiUserEngine:
                 # OPTIONAL V1 GATE. Blank threshold = exact legacy execution path.
                 if s.v1_gate_threshold is not None:
                     from .v1_gate import transition
+                    if s.v1_gate_state == "WAIT_LOW":
+                        self.v1_gate_waiting_threshold[s.id] = float(s.v1_gate_threshold)
+                        if s.id in self.v1_gate_low_observed:
+                            s.v1_gate_state = "WAIT_HIGH"
+                            s.v1_gate_trades = 0
+                            self.v1_gate_low_observed.discard(s.id)
+                            self.v1_gate_waiting_threshold.pop(s.id, None)
                     snap = self._score_all_digits(s.id)
                     rank = snap.get("ranking") or []
                     # The first ranked digit is the V1 candidate (not the gap).
@@ -910,6 +927,13 @@ class MultiUserEngine:
             live_score = (float(ranked[0]["score"])
                           if snap.get("ready") and ranked else None)
             threshold = float(row.v1_gate_threshold)
+            if row.v1_gate_state == "WAIT_LOW":
+                self.v1_gate_waiting_threshold[sid] = threshold
+                if sid in self.v1_gate_low_observed:
+                    row.v1_gate_state = "WAIT_HIGH"
+                    row.v1_gate_trades = 0
+                    self.v1_gate_low_observed.discard(sid)
+                    self.v1_gate_waiting_threshold.pop(sid, None)
             # Only a NEW batch needs a threshold-qualified entry. The second
             # purchase is the continuation of the already triggered batch.
             is_continuation = (
@@ -973,6 +997,8 @@ class MultiUserEngine:
             row.v1_gate_trades = int(row.v1_gate_trades or 0) + 1
             if row.v1_gate_trades >= 2:
                 row.v1_gate_state = "WAIT_LOW"
+                self.v1_gate_waiting_threshold[sid] = float(row.v1_gate_threshold)
+                self.v1_gate_low_observed.discard(sid)
         row.phase = f"BUY_CLAIMED_{trade_no}"
         row.updated_at = datetime.utcnow()
         db.commit()
