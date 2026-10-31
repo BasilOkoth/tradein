@@ -55,6 +55,11 @@ class RapidPair:
                     session = db.get(TradingSession, sid)
                     if session:
                         session.pnl = float(session.pnl or 0) + profit
+                        if str(contract.get('status') or '').lower() == 'won' or profit > 0:
+                            session.running = False
+                            session.paused = False
+                            session.phase = 'RAPID_PAIR_WON_STOPPED'
+                            session.pending_trade_json = None
                         session.updated_at = datetime.utcnow()
                     db.commit()  # commit each settlement for restart safety
                     resolved += 1
@@ -234,7 +239,13 @@ class RapidPair:
                         log.status=str(poc.get('status') or 'SOLD').upper()
                         log.profit=float(profit)
                         log.settled_at=datetime.utcnow()
-                        if s:s.pnl=float(s.pnl or 0)+float(profit)
+                        if s:
+                            s.pnl=float(s.pnl or 0)+float(profit)
+                            if str(poc.get('status') or '').lower() == 'won' or float(profit) > 0:
+                                s.running=False
+                                s.paused=False
+                                s.phase='RAPID_PAIR_WON_STOPPED'
+                                s.pending_trade_json=None
                         db.commit()
                     break
                 finally:db.close()

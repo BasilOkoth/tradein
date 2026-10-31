@@ -1,0 +1,1 @@
+Confirmed rapid-pair WIN: server stops future purchases and saves both contract outcomes independently. Already submitted contracts are not cancelled. GUI displays WIN and plays a win tone when sound is on (browser autoplay restrictions may require clicking the sound control). Session can be deliberately reconfigured for a new run. Test first with demo funds.

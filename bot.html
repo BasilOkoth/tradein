@@ -13095,7 +13095,7 @@ window.executionLock = true;
                 // button in the browser.
                 if (
                     ['STOPPED', 'BUY_UNCERTAIN_STOPPED', 'BUY_CLAIM_LOST',
-                     'BUY_SEQUENCE_MISMATCH', 'RECONCILE_MISMATCH'].includes(phase)
+                     'BUY_SEQUENCE_MISMATCH', 'RECONCILE_MISMATCH', 'RAPID_PAIR_WON_STOPPED'].includes(phase)
                     && !st.running
                     && !st.open_contract_id
                     && window.isBotRunning === true
@@ -13182,6 +13182,9 @@ window.executionLock = true;
                 if (settlementId && settlementId !== prev.settlementId) {
                     if (settlementResult === 'WIN') {
                         playAudioFeedback('WIN');
+                        if (settlement?.rapid_pair) {
+                            try { updateTradeStatus('WIN', 'Confirmed Deriv WIN', 'Bot stopped after win', 'win'); } catch (_) {}
+                        }
                         outcomePlayed = true;
                     } else if (settlementResult === 'LOSS') {
                         playAudioFeedback('LOSS');
@@ -15092,7 +15095,30 @@ window.isBotRunning = true;
         }
         
         function playAudioFeedback(type) {
-            if (!window.soundEnabled || !window.ToneInitialized || !window.synth) return;
+            if (!window.soundEnabled) return;
+            if ((!window.ToneInitialized || !window.synth) && type === 'WIN') {
+                // Browser audio works after user interaction; Tone CDN may be unavailable.
+                try {
+                    const Ctx = window.AudioContext || window.webkitAudioContext;
+                    if (Ctx) {
+                        window.__dmsWinAudio = window.__dmsWinAudio || new Ctx();
+                        const ctx = window.__dmsWinAudio;
+                        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+                        [523.25, 659.25, 783.99].forEach((freq, i) => {
+                            const osc=ctx.createOscillator(), gain=ctx.createGain();
+                            const t=ctx.currentTime + i*0.12;
+                            osc.frequency.value=freq; osc.type='sine';
+                            gain.gain.setValueAtTime(0.0001,t);
+                            gain.gain.exponentialRampToValueAtTime(0.15,t+0.015);
+                            gain.gain.exponentialRampToValueAtTime(0.0001,t+0.17);
+                            osc.connect(gain);gain.connect(ctx.destination);
+                            osc.start(t);osc.stop(t+0.18);
+                        });
+                    }
+                } catch (e) { console.warn('WIN audio unavailable',e); }
+                return;
+            }
+            if (!window.ToneInitialized || !window.synth) return;
             
             try {
                 if (type === 'WIN') {

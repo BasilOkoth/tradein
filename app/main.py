@@ -285,6 +285,29 @@ def digit_score_for_session(session_id: int):
         }
 
 
+def most_recent_settlement(db, sid):
+    """Return last authoritative rapid-pair result for server UI polling."""
+    from .models import TradeLog
+    row=(db.query(TradeLog).filter(
+        TradeLog.trading_session_id == sid,
+        TradeLog.settled_at.isnot(None),
+        TradeLog.contract_id.isnot(None)
+    ).order_by(TradeLog.settled_at.desc(),TradeLog.id.desc()).first())
+    if row is None:
+        return engine.last_settlement_status(sid)
+    try:
+        raw=json.loads(row.raw_json or '{}')
+    except (ValueError,TypeError):
+        raw={}
+    if not isinstance(raw,dict) or not raw.get('rapid_pair'):
+        return engine.last_settlement_status(sid)
+    return {'contract_id':row.contract_id,
+            'result':'WIN' if str(row.status).upper() in ('WON','WIN') or float(row.profit or 0)>0 else 'LOSS',
+            'profit':float(row.profit or 0),
+            'settled_at':row.settled_at.isoformat() if row.settled_at else None,
+            'rapid_pair':True}
+
+
 @app.get("/sessions")
 def sessions(user_id: str = Depends(current_user_id)):
     db = SessionLocal()
@@ -329,7 +352,7 @@ def sessions(user_id: str = Depends(current_user_id)):
                     "last_error": s.last_error,
                     "digit_score": digit_score_for_session(s.id),
                     "target_policy": "rank_1_each_canonical_tick",
-                    "last_settlement": engine.last_settlement_status(s.id),
+                    "last_settlement": most_recent_settlement(db, s.id),
                 }
             )
 
