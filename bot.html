@@ -735,10 +735,9 @@
 <div>
 <label class="block text-xs font-semibold text-gray-300 mb-1" for="maxTrades">Max Trades</label>
 <input class="block w-full rounded-md bg-gray-700 border border-gray-600 text-white shadow-sm focus:border-green-500 focus:ring-green-500 py-1.5 px-2 text-sm" id="maxTrades" inputmode="numeric" min="1" step="1" type="number" value="15"/>
-<div class="mt-3 rounded-lg border border-cyan-700 bg-slate-900/80 p-3" id="v1-gate-controls">
-  <label for="v1GateThreshold" class="block text-sm font-bold text-cyan-300">Optional V1 Entry Threshold</label>
-  <input id="v1GateThreshold" type="number" min="0.01" max="1000" step="0.01" placeholder="Blank = normal trading" class="mt-2 w-full rounded-md bg-gray-700 border border-gray-600 text-white px-3 py-2" />
-  <div class="text-xs text-slate-400 mt-2">When enabled, wait for the rank #1 V1 score to reach the value, then allow at most TWO purchases. A fresh below-to-above crossing is needed for another batch. Leave blank for unchanged trading.</div>
+<div id="v1-gate-controls" class="mt-2 flex items-center gap-2">
+  <label for="v1GateThreshold" class="text-xs font-semibold text-cyan-300 whitespace-nowrap">V1 Threshold</label>
+  <input id="v1GateThreshold" aria-label="Minimum V1 score threshold" type="number" min="0.01" max="1000" step="any" placeholder="Off" class="w-24 min-w-0 rounded-md bg-gray-700 border border-gray-600 text-white px-2 py-1 text-sm" />
 </div>
 
 <p class="text-[10px] text-gray-500 mt-1">Max Trades controls the full cycle. The target is automatically rescored after every 3 consecutive losses.</p>
@@ -13848,10 +13847,7 @@ function toggleServerContinuousResearch() {
                         base_stake: cfg.base_stake,
                         multiplier: cfg.multiplier,
                         max_trades: cfg.max_trades,
-                        v1_gate_threshold: (() => {
-                            const raw = document.getElementById('v1GateThreshold')?.value?.trim();
-                            return raw ? Number(raw) : null;
-                        })()
+                        v1_gate_threshold: cfg.v1_gate_threshold
                     }
                 });
 
@@ -14301,6 +14297,16 @@ function toggleServerContinuousResearch() {
                 base_stake: Number(document.getElementById('baseStake')?.value || 1),
                 multiplier: Number(document.getElementById('multiplier')?.value || 1.15),
                 max_trades: Number(document.getElementById('maxTrades')?.value || 10),
+                v1_gate_threshold: (() => {
+                    const el = document.getElementById('v1GateThreshold');
+                    const raw = el ? el.value.trim() : '';
+                    if (!raw) return null;
+                    const val = Number(raw);
+                    if (!Number.isFinite(val) || val <= 0 || val > 1000) {
+                        throw new Error('V1 Threshold must be above 0 and at most 1000, or left blank.');
+                    }
+                    return val;
+                })(),
                 minimum_v1_margin: getConfiguredMinimumV1Margin()
             };
         }
@@ -14455,7 +14461,8 @@ function toggleServerContinuousResearch() {
                     symbol: cfg.symbol,
                     base_stake: cfg.base_stake,
                     multiplier: cfg.multiplier,
-                    max_trades: cfg.max_trades
+                    max_trades: cfg.max_trades,
+                    v1_gate_threshold: cfg.v1_gate_threshold
                 }
             });
 
