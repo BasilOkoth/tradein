@@ -14776,7 +14776,7 @@ window.isBotRunning = true;
                 log('✅ Reusing authenticated trading connection', 'SYSTEM');
             }
             
-            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
+            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades, #v1GateThreshold').forEach(control => {
                 control.disabled = true;
                 control.classList.add('opacity-50', 'cursor-not-allowed');
             });
@@ -14905,7 +14905,7 @@ window.isBotRunning = true;
                 updateEngineStatus('Market analysis active · Trading idle', 'ANALYZING', 100);
             }
             
-            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades').forEach(control => {
+            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades, #v1GateThreshold').forEach(control => {
                 control.disabled = false;
                 control.classList.remove('opacity-50', 'cursor-not-allowed');
             });
@@ -15151,6 +15151,17 @@ window.isBotRunning = true;
                         : window.isBotRunning === true;
 
             window.isBotRunning = authoritativeRunning;
+
+            // Symbol and configuration are editable after STOP, including
+            // server-side stop or max-trades termination (without local stopBot).
+            const editable = !authoritativeRunning && !startPending &&
+                !Boolean(serverState?.open_contract_id);
+            document.querySelectorAll('#symbol, #predictedDigit, #contractType, #baseStake, #multiplier, #maxTrades, #v1GateThreshold')
+                .forEach(control => {
+                    control.disabled = !editable;
+                    control.classList.toggle('opacity-50', !editable);
+                    control.classList.toggle('cursor-not-allowed', !editable);
+                });
 
             if (startPending) {
                 toggleButton.innerHTML = '<span class="flex items-center justify-center"><span class="mr-2">⏳</span> STARTING...</span>';

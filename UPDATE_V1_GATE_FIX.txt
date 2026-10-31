@@ -1,0 +1,9 @@
+V1 THRESHOLD FIX - OCTOBER 2026
+
+1. The V1 ranking subscription continues running in read-only mode while an authenticated session is idle, provided its Deriv connection stays open. No purchases are created from the idle feed.
+2. Before BUY claim (including prefetch/recovery), the engine rechecks the latest available canonical rank #1 V1 score against the entered threshold and refuses a stale candidate or insufficient score.
+3. The V1 gate resets if score drops below the configured threshold. A new threshold crossing is needed for further purchases. Max two BUY claims per qualifying trigger.
+4. When the backend reports stopped and no contract remains open, symbol and other settings are re-enabled. Changing symbol takes effect on next START.
+5. Blank threshold retains previous trading logic.
+
+LIMITATIONS: The latest observable tick and actual exchange fill are not atomic; an intervening tick may change scores after the pre-buy check. If the WebSocket goes offline after STOP, rankings cannot update until a feed is re-established. Do not enable real trading without demo validation. Verify pending contract state before changing symbol.

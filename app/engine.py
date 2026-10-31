@@ -160,6 +160,32 @@ class MultiUserEngine:
                         self._safe_step(sid)
                     )
 
+            # Read-only canonical subscriptions survive STOP. Refresh subscriptions
+            # for idle sessions only when their authenticated client already exists.
+            # This never calls step() or issues BUY requests.
+            now = asyncio.get_running_loop().time()
+            if now - getattr(self, '_idle_feed_checked', 0.0) >= 5.0:
+                self._idle_feed_checked = now
+                db2 = SessionLocal()
+                try:
+                    idle = db2.query(TradingSession).filter(
+                        TradingSession.running == False
+                    ).all()
+                    feeds = [(r.id, r.user_id, r.account_id, r.symbol)
+                             for r in idle if (r.user_id, r.account_id) in self.clients]
+                finally:
+                    db2.close()
+                for feed_sid, feed_user, feed_account, feed_symbol in feeds:
+                    client = self.clients.get((feed_user, feed_account))
+                    if client and client.is_open():
+                        try:
+                            await self._ensure_tick_subscription(
+                                sid=feed_sid, user_id=feed_user,
+                                account_id=feed_account, symbol=feed_symbol,
+                                client=client)
+                        except Exception:
+                            pass  # Trading is idle: never escalate read-only errors
+
             await asyncio.sleep(0.02)
 
     async def _safe_step(self, sid: int):
@@ -785,6 +811,10 @@ class MultiUserEngine:
                         score,
                         float(s.v1_gate_threshold),
                     )
+                    if score is None or score < float(s.v1_gate_threshold):
+                        # A drop during a two-trade batch invalidates the
+                        # remaining permission until a new crossing.
+                        state, count, allowed = "WAIT_HIGH", 0, False
                     s.v1_gate_state = state
                     s.v1_gate_trades = count
                     if not allowed:
@@ -874,9 +904,41 @@ class MultiUserEngine:
             return None
 
         if row.v1_gate_threshold is not None:
-            if row.v1_gate_state != "ACTIVE" or int(row.v1_gate_trades or 0) >= 2:
-                db.rollback()
+            # BUY BOUNDARY: never trust a previously qualified proposal or
+            # prefetch. Re-evaluate the current V1 rank #1 immediately before
+            # claiming any purchase (first trade OR recovery purchase).
+            from .v1_gate import transition
+            snap = self._score_all_digits(sid)
+            ranked = snap.get("ranking") or []
+            live_score = (float(ranked[0]["score"])
+                          if snap.get("ready") and ranked else None)
+            threshold = float(row.v1_gate_threshold)
+            if live_score is None or live_score < threshold:
+                row.v1_gate_state = "WAIT_HIGH"
+                row.v1_gate_trades = 0
+                row.phase = "V1_GATE_WAITING_FRESH_SCORE"
+                row.updated_at = datetime.utcnow()
+                db.commit()
                 return None
+            state, count, allowed = transition(
+                row.v1_gate_state or "WAIT_HIGH",
+                int(row.v1_gate_trades or 0), live_score, threshold
+            )
+            if not allowed or state != "ACTIVE" or count >= 2:
+                row.v1_gate_state = state
+                row.v1_gate_trades = count
+                row.phase = "V1_GATE_WAITING_NEW_CROSSING"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+                return None
+            # A stale prefetch for an old rank can slip through otherwise.
+            if int(ranked[0]["digit"]) != digit:
+                row.phase = "V1_GATE_STALE_RANK"
+                row.updated_at = datetime.utcnow()
+                db.commit()
+                return None
+            row.v1_gate_state = state
+            row.v1_gate_trades = count
 
         pending = self._pending_json(row.pending_trade_json)
 
