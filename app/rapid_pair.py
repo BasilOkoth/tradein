@@ -35,7 +35,7 @@ class RapidPair:
             unknown = [x for x in records if x.status != 'OPEN' or not x.contract_id]
             if unknown:
                 return {'resolved': 0, 'remaining': len(records),
-                        'reason': 'Purchase outcome unknown: verify Deriv transaction history manually',
+                        'reason': 'Purchase outcome unknown. GET /sessions/{sid}/rapid-pair/unresolved for transaction candidates, then POST /sessions/{sid}/rapid-pair/recover with the verified Deriv contract ID'.format(sid=sid),
                         'log_ids': [x.id for x in unknown]}
             client = await self.engine._client(user_id, account_id)
             resolved = 0

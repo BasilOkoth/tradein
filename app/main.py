@@ -820,6 +820,152 @@ async def authorize_real_rapid_pair(sid: int, body: RapidPairRealAuthorization,
         db.close()
 
 
+
+
+class UncertainTradeRecovery(BaseModel):
+    log_id: int
+    contract_id: str
+
+
+@app.get("/sessions/{sid}/rapid-pair/unresolved")
+async def rapid_pair_unresolved(sid: int, user_id: str = Depends(current_user_id)):
+    """Inspect unresolved purchase journals and potential Deriv statement matches.
+
+    Statement matches are suggestions only, not proof of a specific purchase.
+    """
+    from .models import TradeLog
+    from datetime import timezone
+    db = SessionLocal()
+    try:
+        session = owns_session(db, user_id, sid)
+        logs = db.query(TradeLog).filter(
+            TradeLog.trading_session_id == sid,
+            TradeLog.user_id == user_id,
+            TradeLog.account_id == session.account_id,
+            TradeLog.status.in_(["OPEN", "SUBMITTING", "UNCERTAIN"])
+        ).order_by(TradeLog.id.asc()).all()
+        if not logs:
+            return {"unresolved": [], "statement_error": None}
+        transactions = []
+        statement_error = None
+        try:
+            client = await engine._client(user_id, session.account_id)
+            response = await client.request({"statement": 1, "limit": 100, "offset": 0, "description": 1})
+            transactions = (response.get("statement") or {}).get("transactions") or []
+        except Exception as exc:
+            statement_error = str(exc)
+        result = []
+        for log in logs:
+            stamp = log.created_at.replace(tzinfo=timezone.utc).timestamp() if log.created_at else None
+            candidates = []
+            for tx in transactions:
+                if str(tx.get("action") or "").lower() not in ("buy", "purchase"):
+                    continue
+                contract = tx.get("contract_id")
+                tx_time = tx.get("transaction_time")
+                if not contract or stamp is None or tx_time is None:
+                    continue
+                try:
+                    delta = abs(float(tx_time) - stamp)
+                except (ValueError, TypeError):
+                    continue
+                if delta > 90:
+                    continue
+                try:
+                    amount = abs(float(tx.get("amount")))
+                except (ValueError, TypeError):
+                    continue
+                if abs(amount - float(log.stake or 0)) > 0.02:
+                    continue
+                candidates.append({
+                    "contract_id": str(contract),
+                    "transaction_time": tx_time,
+                    "amount": tx.get("amount"),
+                    "seconds_from_log": round(delta, 1)
+                })
+            result.append({
+                "log_id": log.id, "status": log.status, "contract_id": log.contract_id,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+                "stake": log.stake, "symbol": log.symbol, "digit": log.digit,
+                "possible_transactions_not_verified": sorted(candidates, key=lambda item:item["seconds_from_log"]),
+            })
+        return {"unresolved": result, "statement_error": statement_error,
+                "note": "A matching stake/time does not prove identity. Verify contract ID in Deriv transaction history before recovery."}
+    finally:
+        db.close()
+
+
+@app.post("/sessions/{sid}/rapid-pair/recover")
+async def rapid_pair_recover(sid: int, body: UncertainTradeRecovery,
+                             user_id: str = Depends(current_user_id)):
+    """Recover a known Deriv contract without clearing unknown purchase records.
+
+    This requires an actual contract ID confirmed by the account owner. The
+    Deriv API must return that contract, and the stake is checked when exposed.
+    """
+    from .models import TradeLog
+    cid = str(body.contract_id or "").strip()
+    if not cid.isdigit():
+        raise HTTPException(status_code=400, detail="Provide the numeric Deriv contract ID from account transaction history")
+    db = SessionLocal()
+    try:
+        session = owns_session(db, user_id, sid)
+        log = db.query(TradeLog).filter(
+            TradeLog.id == body.log_id,
+            TradeLog.trading_session_id == sid,
+            TradeLog.user_id == user_id,
+            TradeLog.account_id == session.account_id,
+        ).first()
+        if not log or log.status not in ("OPEN", "SUBMITTING", "UNCERTAIN"):
+            raise HTTPException(status_code=409, detail="Log not found or already reconciled")
+        other = db.query(TradeLog).filter(TradeLog.contract_id == cid, TradeLog.id != log.id).first()
+        if other:
+            raise HTTPException(status_code=409, detail="This contract ID is already attached to another trade record")
+        if log.contract_id and str(log.contract_id) != cid:
+            raise HTTPException(status_code=409, detail="Existing contract ID differs; use the original contract")
+        try:
+            client = await engine._client(user_id, session.account_id)
+            response = await client.contract_status(cid)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=f"Deriv did not verify this contract: {exc}") from exc
+        contract = response.get("proposal_open_contract") or {}
+        if not contract or str(contract.get("contract_id") or "") != cid:
+            raise HTTPException(status_code=409, detail="Deriv did not confirm the supplied contract ID")
+        buy_price = contract.get("buy_price")
+        if buy_price is not None and abs(float(buy_price) - float(log.stake)) > 0.02:
+            raise HTTPException(status_code=409, detail="Contract purchase price does not match the journal stake")
+        if contract.get("is_sold"):
+            profit = contract.get("profit")
+            if profit is None:
+                raise HTTPException(status_code=409, detail="Contract sold but Deriv did not supply profit; retry later")
+            log.status = str(contract.get("status") or "SOLD").upper()
+            log.profit = float(profit)
+            log.settled_at = datetime.utcnow()
+            session.pnl = float(session.pnl or 0) + float(profit)
+            if log.status in ("WON", "WIN") or float(profit) > 0:
+                session.running = False
+                session.phase = "RAPID_PAIR_WON_STOPPED"
+                session.pending_trade_json = None
+        else:
+            log.status = "OPEN"
+        log.contract_id = cid
+        if buy_price is not None:
+            log.buy_price = float(buy_price)
+        raw = json.loads(log.raw_json or "{}")
+        if not isinstance(raw, dict): raw = {}
+        raw["recovered_contract_id"] = cid
+        raw["recovered_at"] = datetime.utcnow().isoformat()
+        log.raw_json = json.dumps(raw)
+        session.updated_at = datetime.utcnow()
+        db.commit()
+        return {"ok": True, "log_id": log.id, "contract_id": cid,
+                "status": log.status, "profit": log.profit,
+                "may_start": False if log.status == "OPEN" else None,
+                "note": "Check other unresolved records before starting. A previous WIN remains stopped."}
+    finally:
+        db.close()
+
+
 @app.post("/sessions/{sid}/real/confirm")
 async def confirm_real(
     sid: int,
